@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import mqtt, { type MqttClient } from 'mqtt';
 import { HumidityService } from '../humidity/humidity.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -9,9 +14,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   private client!: MqttClient;
 
   // Topics
-  private readonly moistureTopic = process.env.MQTT_MOISTURE_TOPIC ?? 'home/garden/moisture';
-  private readonly pumpCommandTopic = process.env.MQTT_PUMP_COMMAND_TOPIC ?? 'home/garden/pump/command';
-  private readonly pumpStatusTopic = process.env.MQTT_PUMP_STATUS_TOPIC ?? 'home/garden/pump/status';
+  private readonly moistureTopic =
+    process.env.MQTT_MOISTURE_TOPIC ?? 'home/garden/moisture';
+  private readonly pumpCommandTopic =
+    process.env.MQTT_PUMP_COMMAND_TOPIC ?? 'home/garden/pump/command';
+  private readonly pumpStatusTopic =
+    process.env.MQTT_PUMP_STATUS_TOPIC ?? 'home/garden/pump/status';
 
   // State
   private pumpState: 'ON' | 'OFF' | 'UNKNOWN' = 'UNKNOWN';
@@ -24,7 +32,8 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    const brokerUrl = process.env.MQTT_BROKER_URL ?? 'mqtt://177.71.203.27:1883';
+    const brokerUrl =
+      process.env.MQTT_BROKER_URL ?? 'mqtt://177.71.203.27:1883';
     const username = process.env.MQTT_USERNAME ?? 'esp32';
     const password = process.env.MQTT_PASSWORD ?? 'esp32device';
 
@@ -41,13 +50,18 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       this.logger.log('Connected to MQTT broker successfully');
 
       // Subscribe to moisture telemetry and pump status
-      this.client.subscribe([this.moistureTopic, this.pumpStatusTopic], (err) => {
-        if (err) {
-          this.logger.error(`Failed to subscribe to topics: ${err.message}`);
-        } else {
-          this.logger.log(`Subscribed to: ${this.moistureTopic}, ${this.pumpStatusTopic}`);
-        }
-      });
+      this.client.subscribe(
+        [this.moistureTopic, this.pumpStatusTopic],
+        (err) => {
+          if (err) {
+            this.logger.error(`Failed to subscribe to topics: ${err.message}`);
+          } else {
+            this.logger.log(
+              `Subscribed to: ${this.moistureTopic}, ${this.pumpStatusTopic}`,
+            );
+          }
+        },
+      );
     });
 
     this.client.on('message', async (topic, payload) => {
@@ -96,9 +110,16 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       });
 
       // Automation check: Automatic irrigation control based on thresholds
-      await this.handleAutoIrrigation(deviceCode, moisture, result.meta.minThreshold, result.meta.maxThreshold);
+      await this.handleAutoIrrigation(
+        deviceCode,
+        moisture,
+        result.meta.minThreshold,
+        result.meta.maxThreshold,
+      );
     } catch (err: any) {
-      this.logger.error(`Error processing moisture message "${rawMessage}": ${err.message}`);
+      this.logger.error(
+        `Error processing moisture message "${rawMessage}": ${err.message}`,
+      );
     }
   }
 
@@ -123,7 +144,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Low moisture detected (${currentMoisture}% < ${minThreshold}%). Triggering automatic irrigation for ${deviceCode}...`,
       );
-      await this.sendPumpCommand('ON', deviceCode, 'AUTOMATIC', currentMoisture);
+      await this.sendPumpCommand(
+        'ON',
+        deviceCode,
+        'AUTOMATIC',
+        currentMoisture,
+      );
       this.lastPumpActionTime = now;
     }
     // Trigger OFF if above maximum threshold and pump is currently running
@@ -131,7 +157,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `Optimal moisture reached (${currentMoisture}% >= ${maxThreshold}%). Stopping automatic irrigation for ${deviceCode}...`,
       );
-      await this.sendPumpCommand('OFF', deviceCode, 'AUTOMATIC', currentMoisture);
+      await this.sendPumpCommand(
+        'OFF',
+        deviceCode,
+        'AUTOMATIC',
+        currentMoisture,
+      );
       this.lastPumpActionTime = now;
     }
   }
@@ -172,13 +203,22 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     const orm = this.prisma.client.orm.public;
 
     // Publish to MQTT
-    this.client.publish(this.pumpCommandTopic, cmdNormalized, { qos: 1 }, (err) => {
-      if (err) {
-        this.logger.error(`Failed to publish pump command ${cmdNormalized}: ${err.message}`);
-      } else {
-        this.logger.log(`Published command "${cmdNormalized}" to ${this.pumpCommandTopic}`);
-      }
-    });
+    this.client.publish(
+      this.pumpCommandTopic,
+      cmdNormalized,
+      { qos: 1 },
+      (err) => {
+        if (err) {
+          this.logger.error(
+            `Failed to publish pump command ${cmdNormalized}: ${err.message}`,
+          );
+        } else {
+          this.logger.log(
+            `Published command "${cmdNormalized}" to ${this.pumpCommandTopic}`,
+          );
+        }
+      },
+    );
 
     this.pumpState = cmdNormalized;
     this.lastPumpActionTime = Date.now();
@@ -215,12 +255,17 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const orm = this.prisma.client.orm.public;
-      const event = await orm.IrrigationEvent.where({ id: this.activeIrrigationEventId }).first();
+      const event = await orm.IrrigationEvent.where({
+        id: this.activeIrrigationEventId,
+      }).first();
 
       if (event) {
         const stoppedAt = new Date().toISOString();
         const startMs = new Date(event.activatedAt).getTime();
-        const durationSeconds = Math.max(1, Math.round((Date.now() - startMs) / 1000));
+        const durationSeconds = Math.max(
+          1,
+          Math.round((Date.now() - startMs) / 1000),
+        );
 
         await orm.IrrigationEvent.where({ id: event.id }).update({
           status: 'COMPLETED',
@@ -229,7 +274,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
           soilHumidityAfter: soilHumidityAfter ?? null,
         });
 
-        this.logger.log(`Irrigation event #${event.id} closed (Duration: ${durationSeconds}s)`);
+        this.logger.log(
+          `Irrigation event #${event.id} closed (Duration: ${durationSeconds}s)`,
+        );
       }
     } catch (err: any) {
       this.logger.error(`Failed to close irrigation event: ${err.message}`);
@@ -243,9 +290,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
    */
   async getPumpStatus() {
     const orm = this.prisma.client.orm.public;
-    const lastEvent = await orm.IrrigationEvent
-      .orderBy((e) => e.activatedAt.desc())
-      .first();
+    const lastEvent = await orm.IrrigationEvent.orderBy((e) =>
+      e.activatedAt.desc(),
+    ).first();
 
     return {
       pumpState: this.pumpState,

@@ -49,7 +49,10 @@ export class HumidityService {
     const reading = await orm.HumidityReading.create({
       humidity: Number(dto.humidity.toFixed(2)),
       rawAdcValue: dto.rawAdcValue ?? null,
-      temperature: dto.temperature !== undefined ? Number(dto.temperature.toFixed(2)) : null,
+      temperature:
+        dto.temperature !== undefined
+          ? Number(dto.temperature.toFixed(2))
+          : null,
       deviceCode,
       deviceId: device.id,
     });
@@ -80,8 +83,7 @@ export class HumidityService {
     const orm = this.prisma.client.orm.public;
     const targetCode = deviceCode ?? 'ESP32-DEFAULT';
 
-    const latest = await orm.HumidityReading
-      .where({ deviceCode: targetCode })
+    const latest = await orm.HumidityReading.where({ deviceCode: targetCode })
       .orderBy((r) => r.timestamp.desc())
       .first();
 
@@ -141,7 +143,8 @@ export class HumidityService {
     let filtered = readings;
 
     if (query.range && query.range !== 'all') {
-      const hours = query.range === '24h' ? 24 : query.range === '7d' ? 24 * 7 : 24 * 30;
+      const hours =
+        query.range === '24h' ? 24 : query.range === '7d' ? 24 * 7 : 24 * 30;
       const cutoff = new Date(now.getTime() - hours * 60 * 60 * 1000);
       filtered = readings.filter((r) => new Date(r.timestamp) >= cutoff);
     } else if (query.startDate) {
@@ -184,15 +187,19 @@ export class HumidityService {
     const values = readings.map((r) => r.humidity);
     const min = Math.min(...values);
     const max = Math.max(...values);
-    const avg = Number((values.reduce((sum, v) => sum + v, 0) / values.length).toFixed(1));
+    const avg = Number(
+      (values.reduce((sum, v) => sum + v, 0) / values.length).toFixed(1),
+    );
     const current = readings[readings.length - 1].humidity;
 
     // Trend calculation (compare first half vs second half)
     const mid = Math.floor(values.length / 2);
     let trend: 'RISING' | 'FALLING' | 'STABLE' = 'STABLE';
     if (mid > 0) {
-      const firstHalfAvg = values.slice(0, mid).reduce((a, b) => a + b, 0) / mid;
-      const secondHalfAvg = values.slice(mid).reduce((a, b) => a + b, 0) / (values.length - mid);
+      const firstHalfAvg =
+        values.slice(0, mid).reduce((a, b) => a + b, 0) / mid;
+      const secondHalfAvg =
+        values.slice(mid).reduce((a, b) => a + b, 0) / (values.length - mid);
       const diff = secondHalfAvg - firstHalfAvg;
       if (diff > 2.0) trend = 'RISING';
       else if (diff < -2.0) trend = 'FALLING';

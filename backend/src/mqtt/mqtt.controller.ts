@@ -11,7 +11,11 @@ export class MqttController {
    */
   @Post()
   async sendPumpCommand(@Body() dto: PumpCommandDto) {
-    return this.mqttService.sendPumpCommand(dto.command, dto.deviceCode ?? 'esp32-01', 'MANUAL');
+    return this.mqttService.sendPumpCommand(
+      dto.command,
+      dto.deviceCode ?? 'esp32-01',
+      'MANUAL',
+    );
   }
 
   /**
