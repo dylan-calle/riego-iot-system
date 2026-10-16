@@ -4,8 +4,8 @@
 // ==========================================
 // 1. CONFIGURACIÓN DE TU RED WI-FI (Cambia esto)
 // ==========================================
-const char* ssid = "ITA-B2-P6-D1";         // Pon aquí el nombre de tu WiFi (Red 2.4GHz)
-const char* password = "ITA%707%2P6-1";   // Pon aquí la contraseña de tu WiFi
+const char* ssid = "WIFICASITA";         // Pon aquí el nombre de tu WiFi (Red 2.4GHz)
+const char* password = "CONTRASEÑA";   // Pon aquí la contraseña de tu WiFi
 
 // ==========================================
 // 2. CONFIGURACIÓN DEL BROKER MQTT (Datos de tu compañero)
