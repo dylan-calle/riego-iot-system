@@ -1,3 +1,11 @@
+import path from 'node:path';
+import dotenv from 'dotenv';
+
+// Ensure .env is loaded before modules read process.env
+dotenv.config();
+dotenv.config({ path: path.resolve(import.meta.dirname, '../.env') });
+dotenv.config({ path: path.resolve(import.meta.dirname, '../../.env') });
+
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
