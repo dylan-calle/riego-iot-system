@@ -30,6 +30,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dotenv": "^18.0.8",
+    "mqtt": "^5.16.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
