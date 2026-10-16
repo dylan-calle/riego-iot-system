@@ -1,0 +1,4 @@
+name: Prod
+variables:
+  - name: API_URL
+    value: http://api.riego.pipexapp.com

@@ -5,13 +5,13 @@ info:
 
 http:
   method: GET
-  url: http://localhost:3000/humidity/stats?range=24h&deviceCode=ESP32-RIEGO-01
+  url: "{{API_URL}}/humidity/stats?range=24h&deviceCode=esp32-01"
   params:
     - name: range
       value: 24h
       type: query
     - name: deviceCode
-      value: ESP32-RIEGO-01
+      value: esp32-01
       type: query
   auth: inherit
 

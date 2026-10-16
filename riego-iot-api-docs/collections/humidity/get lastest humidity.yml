@@ -5,10 +5,10 @@ info:
 
 http:
   method: GET
-  url: http://localhost:3000/humidity/latest?deviceCode=ESP32-RIEGO-01
+  url: http://api.riego.pipexapp.com/humidity/latest?deviceCode=esp32-01
   params:
     - name: deviceCode
-      value: ESP32-RIEGO-01
+      value: esp32-01
       type: query
   auth: inherit
 
