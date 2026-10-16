@@ -1,0 +1,12 @@
+opencollection: 1.0.0
+info:
+  name: "riego-iot-api-docs"
+  type: workspace
+
+collections:
+  - name: "humidity"
+    path: "collections/humidity"
+
+specs:
+
+docs: ''

@@ -1,0 +1,25 @@
+info:
+  name: Send humidity
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: http://localhost:3000/humidity
+  body:
+    type: json
+    data: |-
+      {
+        "humidity": 24.5,
+        "rawAdcValue": 3210,
+        "temperature": 25.1,
+        "deviceCode": "ESP32-RIEGO-01"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
