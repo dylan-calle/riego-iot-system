@@ -1,11 +1,51 @@
 // use prisma-8
 
+model Role {
+  id              Int              @id @default(autoincrement())
+  name            String           @unique
+  description     String?
+  users           User[]
+  rolePermissions RolePermission[]
+  createdAt       TimestamptzString @default(now())
+  updatedAt       temporal.updatedAtString()
+}
+
+model Permission {
+  id              Int              @id @default(autoincrement())
+  action          String           @unique
+  description     String?
+  rolePermissions RolePermission[]
+  userPermissions UserPermission[]
+  createdAt       TimestamptzString @default(now())
+  updatedAt       temporal.updatedAtString()
+}
+
+model RolePermission {
+  id           Int        @id @default(autoincrement())
+  roleId       Int
+  role         Role       @relation(fields: [roleId], references: [id])
+  permissionId Int
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  createdAt    TimestamptzString @default(now())
+}
+
+model UserPermission {
+  id           Int        @id @default(autoincrement())
+  userId       Int
+  user         User       @relation(fields: [userId], references: [id])
+  permissionId Int
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  createdAt    TimestamptzString @default(now())
+}
+
 model User {
   id               Int               @id @default(autoincrement())
   email            String            @unique
   password         String?
   name             String?
-  role             String            @default("admin")
+  roleId           Int?
+  role             Role?             @relation(fields: [roleId], references: [id])
+  userPermissions  UserPermission[]
   devices          Device[]
   irrigationEvents IrrigationEvent[]
   createdAt        TimestamptzString @default(now())

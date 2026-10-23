@@ -1,4 +1,6 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator.js';
+import { PERMISSIONS } from '../auth/permissions.js';
 import { PumpCommandDto } from './dto/pump-command.dto.js';
 import { MqttService } from './mqtt.service.js';
 
@@ -10,6 +12,7 @@ export class MqttController {
    * Manual pump control endpoint for the React Native mobile app
    */
   @Post()
+  @RequirePermissions(PERMISSIONS.PUMP_CONTROL)
   async sendPumpCommand(@Body() dto: PumpCommandDto) {
     return this.mqttService.sendPumpCommand(
       dto.command,
@@ -22,7 +25,9 @@ export class MqttController {
    * Status endpoint to check current pump state and latest irrigation log
    */
   @Get()
+  @RequirePermissions(PERMISSIONS.PUMP_READ)
   async getPumpStatus() {
     return this.mqttService.getPumpStatus();
   }
 }
+

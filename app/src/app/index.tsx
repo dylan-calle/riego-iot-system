@@ -4,16 +4,19 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
 const API_URL = "https://api.riego.pipexapp.com/irrigation/pump";
+const API_BASE = API_URL.replace("/irrigation/pump", "");
 
 const COLORES = {
   fondo: "#F1F5F2",
@@ -116,6 +119,14 @@ export default function Index() {
   const [ultima, setUltima] = useState<number | null>(null);
   const [ahora, setAhora] = useState(Date.now());
 
+  // Authentication state
+  const [token, setToken] = useState<string | null>(null);
+  const [usuario, setUsuario] = useState<{ email: string; role: string } | null>(null);
+  const [modalLoginVisible, setModalLoginVisible] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("admin@gmail.com");
+  const [loginPassword, setLoginPassword] = useState("123456");
+  const [autenticando, setAutenticando] = useState(false);
+
   const pulso = useRef(new Animated.Value(0)).current;
   const controlEnCurso = useRef(false);
   const encendida = estado?.pumpState === "ON";
@@ -124,8 +135,15 @@ export default function Index() {
 
   const cargarEstado = useCallback(async () => {
     try {
-      const respuesta = await fetch(API_URL, { method: "GET" });
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const respuesta = await fetch(API_URL, { method: "GET", headers });
       if (!respuesta.ok) {
+        if (respuesta.status === 401) {
+          throw new Error("No autenticado (401). Inicie sesión para consultar estado.");
+        }
         throw new Error("Error HTTP " + respuesta.status);
       }
       const datos: EstadoBomba = await respuesta.json();
@@ -138,7 +156,7 @@ export default function Index() {
       setCargando(false);
       setRefrescando(false);
     }
-  }, []);
+  }, [token]);
 
   const handleTogglePump = async (targetCommand: "ON" | "OFF") => {
     if (controlEnCurso.current) return;
@@ -146,9 +164,13 @@ export default function Index() {
     controlEnCurso.current = true;
     setIsSubmitting(true);
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
       const respuesta = await fetch(API_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           command: targetCommand,
           deviceCode: "esp32-01",
@@ -156,6 +178,10 @@ export default function Index() {
       });
 
       if (!respuesta.ok) {
+        if (respuesta.status === 401 || respuesta.status === 403) {
+          setModalLoginVisible(true);
+          throw new Error(`Permisos insuficientes (${respuesta.status}). Inicie sesión como administrador.`);
+        }
         throw new Error(`Error HTTP ${respuesta.status}`);
       }
 
@@ -169,12 +195,45 @@ export default function Index() {
         error instanceof Error ? error.message : "Error desconocido";
       Alert.alert(
         "Error",
-        `No se pudo comunicar con la bomba. Verifique el broker MQTT. (${detalle})`,
+        `No se pudo comunicar con la bomba. (${detalle})`,
       );
     } finally {
       controlEnCurso.current = false;
       setIsSubmitting(false);
     }
+  };
+
+  const handleLogin = async () => {
+    if (!loginEmail || !loginPassword) {
+      Alert.alert("Campos requeridos", "Por favor ingrese email y contraseña.");
+      return;
+    }
+    setAutenticando(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message ?? "Credenciales inválidas");
+      }
+      setToken(data.accessToken);
+      setUsuario(data.user);
+      setModalLoginVisible(false);
+      setError("");
+      Alert.alert("Sesión iniciada", `Bienvenido ${data.user.email} (${data.user.role})`);
+    } catch (err: any) {
+      Alert.alert("Error de autenticación", err.message ?? "No se pudo iniciar sesión");
+    } finally {
+      setAutenticando(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setToken(null);
+    setUsuario(null);
   };
 
   // Consulta al backend cada 5 segundos
@@ -241,15 +300,41 @@ export default function Index() {
       <StatusBar barStyle="dark-content" />
 
       {/* Encabezado */}
-      <Text style={styles.titulo}>Riego</Text>
-      <View style={styles.conexion}>
-        <View
-          style={[
-            styles.punto,
-            { backgroundColor: error ? COLORES.alerta : COLORES.agua },
-          ]}
-        />
-        <Text style={styles.conexionTexto}>{haceCuanto(ultima, ahora)}</Text>
+      <View style={styles.cabeceraFila}>
+        <View>
+          <Text style={styles.titulo}>Riego</Text>
+          <View style={styles.conexion}>
+            <View
+              style={[
+                styles.punto,
+                { backgroundColor: error ? COLORES.alerta : COLORES.agua },
+              ]}
+            />
+            <Text style={styles.conexionTexto}>{haceCuanto(ultima, ahora)}</Text>
+          </View>
+        </View>
+
+        {/* Auth info / login button */}
+        {usuario ? (
+          <View style={styles.usuarioPill}>
+            <View style={styles.rolBadge}>
+              <Text style={styles.rolBadgeTexto}>{usuario.role}</Text>
+            </View>
+            <Text style={styles.usuarioEmail} numberOfLines={1}>
+              {usuario.email}
+            </Text>
+            <Pressable onPress={handleLogout} style={styles.logoutBtn}>
+              <Text style={styles.logoutBtnTexto}>Salir</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            onPress={() => setModalLoginVisible(true)}
+            style={styles.loginPill}
+          >
+            <Text style={styles.loginPillTexto}>🔑 Iniciar sesión</Text>
+          </Pressable>
+        )}
       </View>
 
       {/* Aviso sin conexión */}
@@ -335,6 +420,65 @@ export default function Index() {
           <BarraHumedad etiqueta="Después del riego" valor={evento.soilHumidityAfter} />
         </View>
       ) : null}
+
+      {/* Modal de Inicio de Sesión */}
+      <Modal
+        visible={modalLoginVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setModalLoginVisible(false)}
+      >
+        <View style={styles.modalFondo}>
+          <View style={styles.modalContenedor}>
+            <Text style={styles.modalTitulo}>Iniciar sesión</Text>
+            <Text style={styles.modalSubtitulo}>
+              Acceso seguro con control de permisos
+            </Text>
+
+            <Text style={styles.inputLabel}>Correo electrónico</Text>
+            <TextInput
+              style={styles.input}
+              value={loginEmail}
+              onChangeText={setLoginEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              placeholder="admin@gmail.com"
+              placeholderTextColor={COLORES.reposo}
+            />
+
+            <Text style={styles.inputLabel}>Contraseña</Text>
+            <TextInput
+              style={styles.input}
+              value={loginPassword}
+              onChangeText={setLoginPassword}
+              secureTextEntry
+              placeholder="123456"
+              placeholderTextColor={COLORES.reposo}
+            />
+
+            <View style={styles.modalBotones}>
+              <Pressable
+                style={[styles.modalBoton, styles.botonCancelar]}
+                onPress={() => setModalLoginVisible(false)}
+                disabled={autenticando}
+              >
+                <Text style={styles.botonCancelarTexto}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalBoton, styles.botonEntrar]}
+                onPress={handleLogin}
+                disabled={autenticando}
+              >
+                {autenticando ? (
+                  <ActivityIndicator color={COLORES.fondo} size="small" />
+                ) : (
+                  <Text style={styles.botonEntrarTexto}>Ingresar</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -344,10 +488,144 @@ const styles = StyleSheet.create({
   contenido: { paddingTop: 64, paddingHorizontal: 24, paddingBottom: 48 },
   centro: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: COLORES.fondo },
 
+  cabeceraFila: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+  },
   titulo: { fontSize: 38, fontWeight: "800", color: COLORES.tinta, letterSpacing: -1 },
   conexion: { flexDirection: "row", alignItems: "center", marginTop: 6 },
   punto: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
   conexionTexto: { fontSize: 14, color: COLORES.tintaSuave },
+
+  usuarioPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#E2ECE9",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 20,
+    maxWidth: 200,
+  },
+  rolBadge: {
+    backgroundColor: COLORES.tinta,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    marginRight: 6,
+  },
+  rolBadgeTexto: {
+    color: COLORES.fondo,
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  usuarioEmail: {
+    fontSize: 12,
+    color: COLORES.tinta,
+    fontWeight: "600",
+    maxWidth: 90,
+  },
+  logoutBtn: {
+    marginLeft: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    backgroundColor: COLORES.alertaClara,
+    borderRadius: 8,
+  },
+  logoutBtnTexto: {
+    fontSize: 11,
+    color: COLORES.alerta,
+    fontWeight: "700",
+  },
+  loginPill: {
+    backgroundColor: COLORES.tinta,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    alignSelf: "flex-start",
+  },
+  loginPillTexto: {
+    color: COLORES.fondo,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  modalFondo: {
+    flex: 1,
+    backgroundColor: "rgba(18, 48, 47, 0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  modalContenedor: {
+    width: "100%",
+    maxWidth: 380,
+    backgroundColor: COLORES.fondo,
+    borderRadius: 20,
+    padding: 24,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  modalTitulo: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: COLORES.tinta,
+    marginBottom: 4,
+  },
+  modalSubtitulo: {
+    fontSize: 14,
+    color: COLORES.tintaSuave,
+    marginBottom: 20,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: COLORES.tinta,
+    marginBottom: 6,
+    marginTop: 10,
+  },
+  input: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: COLORES.linea,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: COLORES.tinta,
+  },
+  modalBotones: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+    marginTop: 24,
+  },
+  modalBoton: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    minWidth: 90,
+    alignItems: "center",
+  },
+  botonCancelar: {
+    backgroundColor: COLORES.linea,
+  },
+  botonCancelarTexto: {
+    color: COLORES.tinta,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  botonEntrar: {
+    backgroundColor: COLORES.agua,
+  },
+  botonEntrarTexto: {
+    color: COLORES.fondo,
+    fontWeight: "700",
+    fontSize: 14,
+  },
 
   aviso: {
     marginTop: 20,

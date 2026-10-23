@@ -1,0 +1,583 @@
+[
+  {
+    "id": "schema.public",
+    "label": "Create schema \"public\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres"
+    },
+    "precheck": [],
+    "execute": [
+      {
+        "description": "Create schema \"public\"",
+        "sql": "CREATE SCHEMA IF NOT EXISTS \"public\"",
+        "params": []
+      }
+    ],
+    "postcheck": []
+  },
+  {
+    "id": "table.Device",
+    "label": "Create table \"Device\"",
+    "summary": "Creates table \"Device\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "Device"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"Device\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"Device\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"Device\"",
+        "sql": "CREATE TABLE \"public\".\"Device\" (\n  \"code\" text NOT NULL,\n  \"createdAt\" timestamptz DEFAULT (now()) NOT NULL,\n  \"id\" SERIAL NOT NULL,\n  \"lastSeenAt\" timestamptz,\n  \"location\" text,\n  \"maxHumidityThreshold\" float8 DEFAULT 70 NOT NULL,\n  \"minHumidityThreshold\" float8 DEFAULT 30 NOT NULL,\n  \"name\" text NOT NULL,\n  \"status\" text DEFAULT 'ONLINE' NOT NULL,\n  \"updatedAt\" timestamptz NOT NULL,\n  \"userId\" int4,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"Device\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"Device\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.HumidityReading",
+    "label": "Create table \"HumidityReading\"",
+    "summary": "Creates table \"HumidityReading\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "HumidityReading"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"HumidityReading\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"HumidityReading\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"HumidityReading\"",
+        "sql": "CREATE TABLE \"public\".\"HumidityReading\" (\n  \"createdAt\" timestamptz DEFAULT (now()) NOT NULL,\n  \"deviceCode\" text,\n  \"deviceId\" int4,\n  \"humidity\" float8 NOT NULL,\n  \"id\" SERIAL NOT NULL,\n  \"rawAdcValue\" int4,\n  \"temperature\" float8,\n  \"timestamp\" timestamptz DEFAULT (now()) NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"HumidityReading\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"HumidityReading\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.IrrigationEvent",
+    "label": "Create table \"IrrigationEvent\"",
+    "summary": "Creates table \"IrrigationEvent\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "IrrigationEvent"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"IrrigationEvent\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"IrrigationEvent\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"IrrigationEvent\"",
+        "sql": "CREATE TABLE \"public\".\"IrrigationEvent\" (\n  \"activatedAt\" timestamptz DEFAULT (now()) NOT NULL,\n  \"createdAt\" timestamptz DEFAULT (now()) NOT NULL,\n  \"deviceId\" int4,\n  \"durationSeconds\" int4,\n  \"id\" SERIAL NOT NULL,\n  \"mode\" text DEFAULT 'AUTOMATIC' NOT NULL,\n  \"soilHumidityAfter\" float8,\n  \"soilHumidityBefore\" float8,\n  \"status\" text DEFAULT 'COMPLETED' NOT NULL,\n  \"stoppedAt\" timestamptz,\n  \"userId\" int4,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"IrrigationEvent\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"IrrigationEvent\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.User",
+    "label": "Create table \"User\"",
+    "summary": "Creates table \"User\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "User"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"User\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"User\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"User\"",
+        "sql": "CREATE TABLE \"public\".\"User\" (\n  \"createdAt\" timestamptz DEFAULT (now()) NOT NULL,\n  \"email\" text NOT NULL,\n  \"id\" SERIAL NOT NULL,\n  \"name\" text,\n  \"password\" text,\n  \"role\" text DEFAULT 'admin' NOT NULL,\n  \"updatedAt\" timestamptz NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"User\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"User\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "unique.Device.Device_code_key",
+    "label": "Add unique constraint on \"Device\" (code)",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "unique",
+        "name": "Device_code_key",
+        "table": "Device"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure constraint \"Device_code_key\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "Device_code_key",
+          "public",
+          "\"public\".\"Device\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add unique constraint \"Device_code_key\"",
+        "sql": "ALTER TABLE \"public\".\"Device\" ADD CONSTRAINT \"Device_code_key\" UNIQUE (\"code\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify constraint \"Device_code_key\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "Device_code_key",
+          "public",
+          "\"public\".\"Device\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "unique.User.User_email_key",
+    "label": "Add unique constraint on \"User\" (email)",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "unique",
+        "name": "User_email_key",
+        "table": "User"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure constraint \"User_email_key\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "User_email_key",
+          "public",
+          "\"public\".\"User\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add unique constraint \"User_email_key\"",
+        "sql": "ALTER TABLE \"public\".\"User\" ADD CONSTRAINT \"User_email_key\" UNIQUE (\"email\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify constraint \"User_email_key\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "User_email_key",
+          "public",
+          "\"public\".\"User\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.Device.Device_userId_idx_a489d58a",
+    "label": "Create index \"Device_userId_idx_a489d58a\" on \"Device\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "Device_userId_idx_a489d58a",
+        "table": "Device"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"Device_userId_idx_a489d58a\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"Device_userId_idx_a489d58a\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"Device_userId_idx_a489d58a\"",
+        "sql": "CREATE INDEX \"Device_userId_idx_a489d58a\" ON \"public\".\"Device\" (\"userId\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"Device_userId_idx_a489d58a\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"Device_userId_idx_a489d58a\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.HumidityReading.HumidityReading_deviceId_idx_a7d461e8",
+    "label": "Create index \"HumidityReading_deviceId_idx_a7d461e8\" on \"HumidityReading\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "HumidityReading_deviceId_idx_a7d461e8",
+        "table": "HumidityReading"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"HumidityReading_deviceId_idx_a7d461e8\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"HumidityReading_deviceId_idx_a7d461e8\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"HumidityReading_deviceId_idx_a7d461e8\"",
+        "sql": "CREATE INDEX \"HumidityReading_deviceId_idx_a7d461e8\" ON \"public\".\"HumidityReading\" (\"deviceId\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"HumidityReading_deviceId_idx_a7d461e8\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"HumidityReading_deviceId_idx_a7d461e8\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.IrrigationEvent.IrrigationEvent_deviceId_idx_a7d461e8",
+    "label": "Create index \"IrrigationEvent_deviceId_idx_a7d461e8\" on \"IrrigationEvent\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "IrrigationEvent_deviceId_idx_a7d461e8",
+        "table": "IrrigationEvent"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"IrrigationEvent_deviceId_idx_a7d461e8\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"IrrigationEvent_deviceId_idx_a7d461e8\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"IrrigationEvent_deviceId_idx_a7d461e8\"",
+        "sql": "CREATE INDEX \"IrrigationEvent_deviceId_idx_a7d461e8\" ON \"public\".\"IrrigationEvent\" (\"deviceId\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"IrrigationEvent_deviceId_idx_a7d461e8\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"IrrigationEvent_deviceId_idx_a7d461e8\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.IrrigationEvent.IrrigationEvent_userId_idx_a489d58a",
+    "label": "Create index \"IrrigationEvent_userId_idx_a489d58a\" on \"IrrigationEvent\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "IrrigationEvent_userId_idx_a489d58a",
+        "table": "IrrigationEvent"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"IrrigationEvent_userId_idx_a489d58a\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"IrrigationEvent_userId_idx_a489d58a\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"IrrigationEvent_userId_idx_a489d58a\"",
+        "sql": "CREATE INDEX \"IrrigationEvent_userId_idx_a489d58a\" ON \"public\".\"IrrigationEvent\" (\"userId\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"IrrigationEvent_userId_idx_a489d58a\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"IrrigationEvent_userId_idx_a489d58a\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "foreignKey.Device.Device_userId_fkey",
+    "label": "Add foreign key \"Device_userId_fkey\" on \"Device\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "foreignKey",
+        "name": "Device_userId_fkey",
+        "table": "Device"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure FK \"Device_userId_fkey\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "Device_userId_fkey",
+          "public",
+          "\"public\".\"Device\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add FK \"Device_userId_fkey\"",
+        "sql": "ALTER TABLE \"public\".\"Device\"\nADD CONSTRAINT \"Device_userId_fkey\"\nFOREIGN KEY (\"userId\")\nREFERENCES \"public\".\"User\" (\"id\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify FK \"Device_userId_fkey\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "Device_userId_fkey",
+          "public",
+          "\"public\".\"Device\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "foreignKey.HumidityReading.HumidityReading_deviceId_fkey",
+    "label": "Add foreign key \"HumidityReading_deviceId_fkey\" on \"HumidityReading\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "foreignKey",
+        "name": "HumidityReading_deviceId_fkey",
+        "table": "HumidityReading"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure FK \"HumidityReading_deviceId_fkey\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "HumidityReading_deviceId_fkey",
+          "public",
+          "\"public\".\"HumidityReading\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add FK \"HumidityReading_deviceId_fkey\"",
+        "sql": "ALTER TABLE \"public\".\"HumidityReading\"\nADD CONSTRAINT \"HumidityReading_deviceId_fkey\"\nFOREIGN KEY (\"deviceId\")\nREFERENCES \"public\".\"Device\" (\"id\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify FK \"HumidityReading_deviceId_fkey\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "HumidityReading_deviceId_fkey",
+          "public",
+          "\"public\".\"HumidityReading\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "foreignKey.IrrigationEvent.IrrigationEvent_deviceId_fkey",
+    "label": "Add foreign key \"IrrigationEvent_deviceId_fkey\" on \"IrrigationEvent\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "foreignKey",
+        "name": "IrrigationEvent_deviceId_fkey",
+        "table": "IrrigationEvent"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure FK \"IrrigationEvent_deviceId_fkey\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "IrrigationEvent_deviceId_fkey",
+          "public",
+          "\"public\".\"IrrigationEvent\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add FK \"IrrigationEvent_deviceId_fkey\"",
+        "sql": "ALTER TABLE \"public\".\"IrrigationEvent\"\nADD CONSTRAINT \"IrrigationEvent_deviceId_fkey\"\nFOREIGN KEY (\"deviceId\")\nREFERENCES \"public\".\"Device\" (\"id\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify FK \"IrrigationEvent_deviceId_fkey\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "IrrigationEvent_deviceId_fkey",
+          "public",
+          "\"public\".\"IrrigationEvent\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "foreignKey.IrrigationEvent.IrrigationEvent_userId_fkey",
+    "label": "Add foreign key \"IrrigationEvent_userId_fkey\" on \"IrrigationEvent\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "foreignKey",
+        "name": "IrrigationEvent_userId_fkey",
+        "table": "IrrigationEvent"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure FK \"IrrigationEvent_userId_fkey\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "IrrigationEvent_userId_fkey",
+          "public",
+          "\"public\".\"IrrigationEvent\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add FK \"IrrigationEvent_userId_fkey\"",
+        "sql": "ALTER TABLE \"public\".\"IrrigationEvent\"\nADD CONSTRAINT \"IrrigationEvent_userId_fkey\"\nFOREIGN KEY (\"userId\")\nREFERENCES \"public\".\"User\" (\"id\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify FK \"IrrigationEvent_userId_fkey\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "IrrigationEvent_userId_fkey",
+          "public",
+          "\"public\".\"IrrigationEvent\""
+        ]
+      }
+    ]
+  }
+]
