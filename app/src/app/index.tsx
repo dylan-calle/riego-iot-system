@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+
+import HumedadDashboard from "../components/HumedadDashboard";
 import {
   Alert,
   ActivityIndicator,
@@ -386,7 +388,7 @@ export default function Index() {
           )}
         </Pressable>
       </View>
-
+   <HumedadDashboard />
       {/* Último riego */}
       <View style={styles.seccion}>
         <View style={styles.seccionCabecera}>
