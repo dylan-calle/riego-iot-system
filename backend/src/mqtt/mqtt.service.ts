@@ -3,6 +3,7 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import mqtt, { type MqttClient } from 'mqtt';
 import { HumidityService } from '../humidity/humidity.service.js';
@@ -190,6 +191,40 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private publishPumpCommand(command: 'ON' | 'OFF'): Promise<void> {
+    if (!this.client?.connected) {
+      throw new ServiceUnavailableException(
+        'Cannot control the pump because the MQTT broker is unavailable',
+      );
+    }
+
+    return new Promise((resolve, reject) => {
+      this.client.publish(
+        this.pumpCommandTopic,
+        command,
+        { qos: 1 },
+        (error) => {
+          if (error) {
+            this.logger.error(
+              `Failed to publish pump command ${command}: ${error.message}`,
+            );
+            reject(
+              new ServiceUnavailableException(
+                `Failed to publish pump command ${command}`,
+              ),
+            );
+            return;
+          }
+
+          this.logger.log(
+            `Published command "${command}" to ${this.pumpCommandTopic}`,
+          );
+          resolve();
+        },
+      );
+    });
+  }
+
   /**
    * Send ON or OFF command to ESP32 on home/garden/pump/command
    */
@@ -199,26 +234,11 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     mode: 'MANUAL' | 'AUTOMATIC' = 'MANUAL',
     soilHumidity?: number,
   ) {
-    const cmdNormalized = command.toUpperCase() as 'ON' | 'OFF';
+    const cmdNormalized: 'ON' | 'OFF' =
+      command.toUpperCase() === 'ON' ? 'ON' : 'OFF';
     const orm = this.prisma.client.orm.public;
 
-    // Publish to MQTT
-    this.client.publish(
-      this.pumpCommandTopic,
-      cmdNormalized,
-      { qos: 1 },
-      (err) => {
-        if (err) {
-          this.logger.error(
-            `Failed to publish pump command ${cmdNormalized}: ${err.message}`,
-          );
-        } else {
-          this.logger.log(
-            `Published command "${cmdNormalized}" to ${this.pumpCommandTopic}`,
-          );
-        }
-      },
-    );
+    await this.publishPumpCommand(cmdNormalized);
 
     this.pumpState = cmdNormalized;
     this.lastPumpActionTime = Date.now();

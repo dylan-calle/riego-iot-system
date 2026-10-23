@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Alert,
   ActivityIndicator,
   Animated,
   Easing,
+  Pressable,
   RefreshControl,
   ScrollView,
   StatusBar,
@@ -109,12 +111,16 @@ export default function Index() {
   const [estado, setEstado] = useState<EstadoBomba | null>(null);
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [ultima, setUltima] = useState<number | null>(null);
   const [ahora, setAhora] = useState(Date.now());
 
   const pulso = useRef(new Animated.Value(0)).current;
+  const controlEnCurso = useRef(false);
   const encendida = estado?.pumpState === "ON";
+  const estadoConocido =
+    estado?.pumpState === "ON" || estado?.pumpState === "OFF";
 
   const cargarEstado = useCallback(async () => {
     try {
@@ -133,6 +139,43 @@ export default function Index() {
       setRefrescando(false);
     }
   }, []);
+
+  const handleTogglePump = async (targetCommand: "ON" | "OFF") => {
+    if (controlEnCurso.current) return;
+
+    controlEnCurso.current = true;
+    setIsSubmitting(true);
+    try {
+      const respuesta = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          command: targetCommand,
+          deviceCode: "esp32-01",
+        }),
+      });
+
+      if (!respuesta.ok) {
+        throw new Error(`Error HTTP ${respuesta.status}`);
+      }
+
+      setEstado((actual) => ({
+        pumpState: targetCommand,
+        lastEvent: actual?.lastEvent ?? null,
+      }));
+      await cargarEstado();
+    } catch (error: unknown) {
+      const detalle =
+        error instanceof Error ? error.message : "Error desconocido";
+      Alert.alert(
+        "Error",
+        `No se pudo comunicar con la bomba. Verifique el broker MQTT. (${detalle})`,
+      );
+    } finally {
+      controlEnCurso.current = false;
+      setIsSubmitting(false);
+    }
+  };
 
   // Consulta al backend cada 5 segundos
   useEffect(() => {
@@ -237,6 +280,26 @@ export default function Index() {
             {estado ? (encendida ? "Encendida" : "Apagada") : "Sin datos"}
           </Text>
         </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: isSubmitting || !estadoConocido }}
+          disabled={isSubmitting || !estadoConocido}
+          onPress={() => handleTogglePump(encendida ? "OFF" : "ON")}
+          style={({ pressed }) => [
+            styles.botonBomba,
+            encendida ? styles.botonApagar : styles.botonEncender,
+            (pressed || isSubmitting) && styles.botonPresionado,
+            (isSubmitting || !estadoConocido) && styles.botonDeshabilitado,
+          ]}
+        >
+          {isSubmitting ? (
+            <ActivityIndicator color={COLORES.fondo} />
+          ) : (
+            <Text style={styles.textoBotonBomba}>
+              {encendida ? "Apagar bomba" : "Encender bomba"}
+            </Text>
+          )}
+        </Pressable>
       </View>
 
       {/* Último riego */}
@@ -297,7 +360,7 @@ const styles = StyleSheet.create({
   avisoTitulo: { fontSize: 15, fontWeight: "700", color: COLORES.alerta, marginBottom: 2 },
   avisoTexto: { fontSize: 14, color: COLORES.tinta, lineHeight: 20 },
 
-  heroZona: { alignItems: "center", justifyContent: "center", height: 300, marginVertical: 8 },
+  heroZona: { alignItems: "center", justifyContent: "center", height: 360, marginVertical: 8 },
   onda: { position: "absolute", width: 210, height: 210, borderRadius: 105 },
   circulo: {
     width: 210,
@@ -310,6 +373,20 @@ const styles = StyleSheet.create({
   },
   heroEtiqueta: { fontSize: 15, color: COLORES.tintaSuave, marginBottom: 4 },
   heroEstado: { fontSize: 32, fontWeight: "800", letterSpacing: -0.5 },
+  botonBomba: {
+    minWidth: 180,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+    paddingHorizontal: 24,
+    borderRadius: 24,
+  },
+  botonEncender: { backgroundColor: COLORES.agua },
+  botonApagar: { backgroundColor: COLORES.alerta },
+  botonPresionado: { opacity: 0.82 },
+  botonDeshabilitado: { opacity: 0.55 },
+  textoBotonBomba: { color: COLORES.fondo, fontSize: 16, fontWeight: "700" },
 
   seccion: { marginTop: 24 },
   seccionCabecera: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
