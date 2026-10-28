@@ -31,15 +31,31 @@ The backend categorizes soil moisture percentage into four states:
 
 ## 📑 Endpoints Overview
 
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | [`/humidity/latest`](#1-get-humiditylatest) | Returns the most recent humidity reading and device status |
-| `GET` | [`/humidity/stats`](#2-get-humiditystats) | Returns aggregated statistics, summary card metrics, and chart points |
-| `GET` | [`/humidity/history`](#3-get-humidityhistory) | Returns paginated/filtered list of historical sensor readings |
-| `POST` | [`/humidity`](#4-post-humidity) | Ingests a new sensor reading (ESP32 / HTTP / MQTT fallback) |
-| `GET` | [`/irrigation/pump`](#5-get-irrigationpump) | Returns the current state of the irrigation pump (`ON` / `OFF`) |
-| `POST` | [`/irrigation/pump`](#6-post-irrigationpump) | Manually activates or deactivates the pump |
-| `GET` | [`/`](#7-get-) | Health check endpoint |
+### 🔐 Authentication & Authorization
+> Full implementation details for mobile app AI agents are available in [**`MOBILE_AUTH_INTEGRATION_GUIDE.md`**](file:///home/dylan-gnu/Proyects/_college/riego-iot-system/MOBILE_AUTH_INTEGRATION_GUIDE.md).
+
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :---: |
+| `POST` | `/auth/login` | Log in with email and password to receive JWT | **Public** |
+| `POST` | `/auth/register` | Register a new user (defaults to `VIEWER` role) | **Public** |
+| `GET` | `/auth/me` | Fetch active user profile and up-to-date permissions | **Bearer JWT** |
+| `GET` | `/auth/available-permissions` | List all available permissions in the system | **Public** |
+| `GET` | `/roles` | List all system and custom roles with permissions | `roles:read` |
+| `POST` | `/roles` | Create a custom role with permissions | `roles:manage` |
+| `GET` | `/permissions` | List permission catalog | `permissions:read` |
+| `GET` | `/users` | List users, their roles, and custom permissions | `users:read` |
+
+### 🌿 Sensor & Irrigation Endpoints
+
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :---: |
+| `GET` | [`/humidity/latest`](#1-get-humiditylatest) | Returns the most recent humidity reading and device status | `humidity:read` |
+| `GET` | [`/humidity/stats`](#2-get-humiditystats) | Returns aggregated statistics, summary card metrics, and chart points | `humidity:read` |
+| `GET` | [`/humidity/history`](#3-get-humidityhistory) | Returns paginated/filtered list of historical sensor readings | `humidity:read` |
+| `POST` | [`/humidity`](#4-post-humidity) | Ingests a new sensor reading (ESP32 / HTTP / MQTT fallback) | `humidity:create` |
+| `GET` | [`/irrigation/pump`](#5-get-irrigationpump) | Returns the current state of the irrigation pump (`ON` / `OFF`) | `pump:read` |
+| `POST` | [`/irrigation/pump`](#6-post-irrigationpump) | Manually activates or deactivates the pump | `pump:control` |
+| `GET` | [`/`](#7-get-) | Health check endpoint | **Public** |
 
 ---
 
