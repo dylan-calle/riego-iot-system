@@ -21,6 +21,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     process.env.MQTT_PUMP_COMMAND_TOPIC ?? 'home/garden/pump/command';
   private readonly pumpStatusTopic =
     process.env.MQTT_PUMP_STATUS_TOPIC ?? 'home/garden/pump/status';
+  private readonly deviceStatusTopic =
+    process.env.MQTT_DEVICE_STATUS_TOPIC ?? 'home/garden/status';
+  private readonly thresholdConfigTopic =
+    process.env.MQTT_THRESHOLD_CONFIG_TOPIC ?? 'home/garden/config/threshold';
 
   // State
   private pumpState: 'ON' | 'OFF' | 'UNKNOWN' = 'UNKNOWN';
@@ -34,7 +38,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     const brokerUrl =
-      process.env.MQTT_BROKER_URL ?? 'mqtt://177.71.203.27:1883';
+      process.env.MQTT_BROKER_URL ?? 'mqtt://177.71.203.27:8883';
     const username = process.env.MQTT_USERNAME ?? 'esp32';
     const password = process.env.MQTT_PASSWORD ?? 'esp32device';
 
@@ -50,15 +54,15 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     this.client.on('connect', () => {
       this.logger.log('Connected to MQTT broker successfully');
 
-      // Subscribe to moisture telemetry and pump status
+      // Subscribe to moisture telemetry, pump status, and device heartbeat/LWT
       this.client.subscribe(
-        [this.moistureTopic, this.pumpStatusTopic],
+        [this.moistureTopic, this.pumpStatusTopic, this.deviceStatusTopic],
         (err) => {
           if (err) {
             this.logger.error(`Failed to subscribe to topics: ${err.message}`);
           } else {
             this.logger.log(
-              `Subscribed to: ${this.moistureTopic}, ${this.pumpStatusTopic}`,
+              `Subscribed to: ${this.moistureTopic}, ${this.pumpStatusTopic}, ${this.deviceStatusTopic}`,
             );
           }
         },
@@ -71,6 +75,8 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         await this.handleMoistureMessage(message);
       } else if (topic === this.pumpStatusTopic) {
         await this.handlePumpStatusMessage(message);
+      } else if (topic === this.deviceStatusTopic) {
+        await this.handleDeviceStatusMessage(message);
       }
     });
 
@@ -191,6 +197,61 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Processes device heartbeat & LWT: {"deviceId":"esp32-01","status":"ONLINE"|"OFFLINE"}
+   */
+  private async handleDeviceStatusMessage(rawMessage: string) {
+    try {
+      let deviceCode = 'esp32-01';
+      let status = 'ONLINE';
+
+      try {
+        const parsed = JSON.parse(rawMessage);
+        if (parsed.deviceId || parsed.deviceCode) {
+          deviceCode = parsed.deviceId ?? parsed.deviceCode;
+        }
+        if (parsed.status) {
+          status = String(parsed.status).toUpperCase();
+        }
+      } catch {
+        const trimmed = rawMessage.trim().toUpperCase();
+        if (trimmed === 'ONLINE' || trimmed === 'OFFLINE') {
+          status = trimmed;
+        }
+      }
+
+      const orm = this.prisma.client.orm.public;
+      const device = await orm.Device.where({ code: deviceCode }).first();
+      const nowIso = new Date().toISOString();
+
+      if (!device) {
+        await orm.Device.create({
+          code: deviceCode,
+          name: `ESP32 Node (${deviceCode})`,
+          status,
+          minHumidityThreshold: 30.0,
+          maxHumidityThreshold: 70.0,
+          lastSeenAt: nowIso,
+        });
+        this.logger.log(
+          `Created device record for ${deviceCode} with status: ${status}`,
+        );
+      } else {
+        await orm.Device.where({ id: device.id }).update({
+          status,
+          lastSeenAt: nowIso,
+        });
+        this.logger.log(
+          `Updated device status for ${deviceCode}: ${status} (Last seen: ${nowIso})`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.error(
+        `Error processing device status message "${rawMessage}": ${err.message}`,
+      );
+    }
+  }
+
   private publishPumpCommand(command: 'ON' | 'OFF'): Promise<void> {
     if (!this.client?.connected) {
       throw new ServiceUnavailableException(
@@ -223,6 +284,64 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         },
       );
     });
+  }
+
+  /**
+   * Publishes new threshold configuration to ESP32 on home/garden/config/threshold
+   */
+  async sendThresholdConfig(
+    threshold: number,
+    deviceCode: string = 'esp32-01',
+  ) {
+    if (!this.client?.connected) {
+      throw new ServiceUnavailableException(
+        'Cannot update threshold because the MQTT broker is unavailable',
+      );
+    }
+
+    const payload = String(Math.round(threshold));
+
+    await new Promise<void>((resolve, reject) => {
+      this.client.publish(
+        this.thresholdConfigTopic,
+        payload,
+        { qos: 1, retain: true },
+        (error) => {
+          if (error) {
+            this.logger.error(
+              `Failed to publish threshold config ${payload}: ${error.message}`,
+            );
+            reject(
+              new ServiceUnavailableException(
+                `Failed to publish threshold config to MQTT broker`,
+              ),
+            );
+            return;
+          }
+
+          this.logger.log(
+            `Published new threshold "${payload}" to ${this.thresholdConfigTopic} (retained)`,
+          );
+          resolve();
+        },
+      );
+    });
+
+    const orm = this.prisma.client.orm.public;
+    const device = await orm.Device.where({ code: deviceCode }).first();
+
+    if (device) {
+      await orm.Device.where({ id: device.id }).update({
+        minHumidityThreshold: threshold,
+      });
+    }
+
+    return {
+      success: true,
+      deviceCode,
+      minHumidityThreshold: threshold,
+      topic: this.thresholdConfigTopic,
+    };
   }
 
   /**
@@ -308,13 +427,43 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   /**
    * Get current known pump state and last irrigation event
    */
-  async getPumpStatus() {
+  async getPumpStatus(deviceCode: string = 'esp32-01') {
     const orm = this.prisma.client.orm.public;
+    const device = await orm.Device.where({ code: deviceCode }).first();
     const lastEvent = await orm.IrrigationEvent.orderBy((e) =>
       e.activatedAt.desc(),
     ).first();
 
     return {
+      pumpState: this.pumpState,
+      deviceCode,
+      deviceStatus: device?.status ?? 'UNKNOWN',
+      lastSeenAt: device?.lastSeenAt ?? null,
+      threshold: device?.minHumidityThreshold ?? 30.0,
+      lastEvent: lastEvent ?? null,
+    };
+  }
+
+  /**
+   * Get device telemetry, connection status, and configuration
+   */
+  async getDeviceStatus(deviceCode: string = 'esp32-01') {
+    const orm = this.prisma.client.orm.public;
+    const device = await orm.Device.where({ code: deviceCode }).first();
+    const lastEvent = await orm.IrrigationEvent.orderBy((e) =>
+      e.activatedAt.desc(),
+    ).first();
+
+    const deviceStatus = device?.status ?? 'UNKNOWN';
+
+    return {
+      deviceCode,
+      name: device?.name ?? `ESP32 Node (${deviceCode})`,
+      status: deviceStatus,
+      deviceStatus,
+      lastSeenAt: device?.lastSeenAt ?? null,
+      minHumidityThreshold: device?.minHumidityThreshold ?? 30.0,
+      maxHumidityThreshold: device?.maxHumidityThreshold ?? 70.0,
       pumpState: this.pumpState,
       lastEvent: lastEvent ?? null,
     };

@@ -55,7 +55,9 @@ The backend categorizes soil moisture percentage into four states:
 | `POST` | [`/humidity`](#4-post-humidity) | Ingests a new sensor reading (ESP32 / HTTP / MQTT fallback) | `humidity:create` |
 | `GET` | [`/irrigation/pump`](#5-get-irrigationpump) | Returns the current state of the irrigation pump (`ON` / `OFF`) | `pump:read` |
 | `POST` | [`/irrigation/pump`](#6-post-irrigationpump) | Manually activates or deactivates the pump | `pump:control` |
-| `GET` | [`/`](#7-get-) | Health check endpoint | **Public** |
+| `PUT` / `POST` | [`/irrigation/threshold`](#7-put--post-irrigationthreshold) | Sets soil moisture threshold and notifies ESP32 via MQTT (`home/garden/config/threshold`) | `pump:control` |
+| `GET` | [`/irrigation/status`](#8-get-irrigationstatus) | Returns node connectivity (ONLINE/OFFLINE, heartbeat) and current pump state | `pump:read` |
+| `GET` | [`/`](#9-get-) | Health check endpoint | **Public** |
 
 ---
 
@@ -340,7 +342,89 @@ Sends a command via MQTT to the ESP32 to manually turn the irrigation pump **ON*
 
 ---
 
-### 7. `GET /`
+### 7. `PUT /irrigation/threshold` & `POST /irrigation/threshold`
+
+Sets the soil moisture threshold percentage (`minHumidityThreshold`) for an irrigation node in the database and broadcasts the new threshold to the ESP32 via MQTT topic `home/garden/config/threshold` with retain flag set (`qos: 1, retain: true`).
+
+- **Permission Required**: `pump:control` (e.g. `ADMIN`, `OPERATOR`)
+
+#### Request Headers
+
+```http
+Content-Type: application/json
+Authorization: Bearer <accessToken>
+```
+
+#### Request Body
+
+| Field | Type | Required | Range | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `threshold` | `number` | **Yes** | `0` – `100` | Minimum humidity threshold percentage to trigger watering |
+| `deviceCode` | `string` | No | - | Node code (default: `"esp32-01"`) |
+
+#### Example Body
+
+```json
+{
+  "threshold": 35,
+  "deviceCode": "esp32-01"
+}
+```
+
+#### Success Response (`200 OK`)
+
+```json
+{
+  "success": true,
+  "threshold": 35,
+  "deviceCode": "esp32-01",
+  "topic": "home/garden/config/threshold",
+  "message": "Threshold updated to 35% and broadcast to ESP32"
+}
+```
+
+---
+
+### 8. `GET /irrigation/status`
+
+Retrieves the live operational status and connectivity metrics of the IoT node and the irrigation pump, combining MQTT broker connectivity, ESP32 device connectivity (`ONLINE` / `OFFLINE` reported by LWT and heartbeat on `home/garden/status`), last seen timestamp, threshold configuration, and pump state.
+
+- **Permission Required**: `pump:read` (e.g. `ADMIN`, `OPERATOR`, `VIEWER`)
+
+#### Example Request
+
+```http
+GET /irrigation/status?deviceCode=esp32-01 HTTP/1.1
+Host: api.riego.pipexapp.com
+Authorization: Bearer <accessToken>
+```
+
+#### Success Response (`200 OK`)
+
+```json
+{
+  "deviceCode": "esp32-01",
+  "connected": true,
+  "status": "ONLINE",
+  "deviceStatus": "ONLINE",
+  "lastSeenAt": "2026-10-28T20:45:10.123Z",
+  "minThreshold": 35,
+  "maxThreshold": 70,
+  "pumpState": "OFF",
+  "lastPumpEvent": {
+    "id": 8,
+    "mode": "AUTOMATIC",
+    "status": "COMPLETED",
+    "activatedAt": "2026-10-28T20:30:00.000Z",
+    "stoppedAt": "2026-10-28T20:31:00.000Z",
+    "durationSeconds": 60
+  }
+}
+```
+
+---
+
+### 9. `GET /`
 
 Health check endpoint.
 
@@ -441,6 +525,26 @@ export interface PumpCommandResponse {
   success: boolean;
   action: 'ON' | 'OFF';
   pumpState: PumpState;
+  message: string;
+}
+
+export interface DeviceStatusResponse {
+  deviceCode: string;
+  connected: boolean;
+  status: 'ONLINE' | 'OFFLINE';
+  deviceStatus: 'ONLINE' | 'OFFLINE';
+  lastSeenAt: string | null;
+  minThreshold: number;
+  maxThreshold: number;
+  pumpState: PumpState;
+  lastPumpEvent: IrrigationEvent | null;
+}
+
+export interface SetThresholdResponse {
+  success: boolean;
+  threshold: number;
+  deviceCode: string;
+  topic: string;
   message: string;
 }
 ```

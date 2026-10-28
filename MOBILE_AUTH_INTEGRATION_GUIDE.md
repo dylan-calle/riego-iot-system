@@ -277,6 +277,8 @@ The backend enforces Role-Based Access Control (RBAC) supplemented by custom gra
 | `/humidity` | `POST` | `humidity:create` | `ADMIN` | No |
 | `/irrigation/pump` | `GET` | `pump:read` | `ADMIN`, `OPERATOR`, `VIEWER` | No |
 | `/irrigation/pump` | `POST` | `pump:control` | `ADMIN`, `OPERATOR` | No |
+| `/irrigation/status` | `GET` | `pump:read` | `ADMIN`, `OPERATOR`, `VIEWER` | No |
+| `/irrigation/threshold` | `PUT` / `POST` | `pump:control` | `ADMIN`, `OPERATOR` | No |
 | `/roles` | `GET` | `roles:read` | `ADMIN` | No |
 | `/roles` | `POST` | `roles:manage` | `ADMIN` | No |
 | `/roles/:id` | `GET` | `roles:read` | `ADMIN` | No |

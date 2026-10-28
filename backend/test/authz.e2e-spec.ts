@@ -78,6 +78,18 @@ describe('Auth & Authz (e2e)', () => {
     expect(res.body).toHaveProperty('pumpState');
   });
 
+  it('6b. GET /irrigation/status returns device status, threshold, and pump state', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/irrigation/status')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(res.body).toHaveProperty('pumpState');
+    expect(res.body).toHaveProperty('deviceStatus');
+    expect(res.body).toHaveProperty('minHumidityThreshold');
+  });
+
+
   it('7. GET /permissions lists all system endpoint permissions', async () => {
     const res = await request(app.getHttpServer())
       .get('/permissions')
