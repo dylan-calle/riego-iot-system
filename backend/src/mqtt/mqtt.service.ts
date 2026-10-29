@@ -37,10 +37,18 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    const brokerUrl =
-      process.env.MQTT_BROKER_URL ?? 'mqtt://177.71.203.27:8883';
+    let brokerUrl =
+      process.env.MQTT_BROKER_URL ?? 'mqtts://mqtt.riego.pipexapp.com:8883';
     const username = process.env.MQTT_USERNAME ?? 'esp32';
     const password = process.env.MQTT_PASSWORD ?? 'esp32device';
+
+    // Auto-normalize if protocol was mistakenly set to mqtt:// on TLS port 8883
+    if (brokerUrl.startsWith('mqtt://') && brokerUrl.includes(':8883')) {
+      this.logger.warn(
+        'Detected unencrypted "mqtt://" scheme for port 8883. Switching to "mqtts://" to prevent TLS handshake failure (ECONNRESET).',
+      );
+      brokerUrl = brokerUrl.replace(/^mqtt:\/\//, 'mqtts://');
+    }
 
     this.logger.log(`Connecting to MQTT broker at ${brokerUrl}...`);
 
@@ -49,6 +57,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       password,
       reconnectPeriod: 5000,
       connectTimeout: 10000,
+      clientId:
+        process.env.MQTT_CLIENT_ID ??
+        `riego-backend-${Math.random().toString(16).slice(2, 10)}`,
     });
 
     this.client.on('connect', () => {
