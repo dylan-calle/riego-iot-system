@@ -298,7 +298,11 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     try {
       const parsed: unknown = JSON.parse(rawMessage);
 
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (
+        parsed === null ||
+        typeof parsed !== 'object' ||
+        Array.isArray(parsed)
+      ) {
         this.logger.warn(`Received invalid diagnostics payload: ${rawMessage}`);
         return;
       }

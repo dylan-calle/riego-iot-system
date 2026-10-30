@@ -48,4 +48,3 @@ export class HumidityController {
     return this.humidityService.getStats(deviceCode, range ?? '24h');
   }
 }
-

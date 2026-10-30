@@ -14,7 +14,9 @@ describe('Auth & Authz (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, transform: true }),
+    );
     await app.init();
   });
 
@@ -28,9 +30,7 @@ describe('Auth & Authz (e2e)', () => {
   });
 
   it('2. GET /irrigation/pump without token is blocked with 401 Unauthorized', async () => {
-    await request(app.getHttpServer())
-      .get('/irrigation/pump')
-      .expect(401);
+    await request(app.getHttpServer()).get('/irrigation/pump').expect(401);
   });
 
   it('3. POST /auth/login with invalid password returns 401', async () => {
@@ -89,7 +89,6 @@ describe('Auth & Authz (e2e)', () => {
     expect(res.body).toHaveProperty('minHumidityThreshold');
   });
 
-
   it('7. GET /permissions lists all system endpoint permissions', async () => {
     const res = await request(app.getHttpServer())
       .get('/permissions')
@@ -117,32 +116,29 @@ describe('Auth & Authz (e2e)', () => {
     expect(roleNames).toContain('VIEWER');
   });
 
-  it(
-    '9. POST /roles can create a custom role with customized endpoint permissions',
-    async () => {
-      const customRoleName = `GARDENER_${Date.now()}`;
-      const res = await request(app.getHttpServer())
-        .post('/roles')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({
-          name: customRoleName,
-          description: 'Custom gardener role with read and pump control permissions',
-          permissions: ['humidity:read', 'pump:control'],
-        })
-        .expect(201);
+  it('9. POST /roles can create a custom role with customized endpoint permissions', async () => {
+    const customRoleName = `GARDENER_${Date.now()}`;
+    const res = await request(app.getHttpServer())
+      .post('/roles')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: customRoleName,
+        description:
+          'Custom gardener role with read and pump control permissions',
+        permissions: ['humidity:read', 'pump:control'],
+      })
+      .expect(201);
 
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.name).toBe(customRoleName);
-      expect(res.body.data.permissions).toEqual(
-        expect.arrayContaining(['humidity:read', 'pump:control']),
-      );
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.name).toBe(customRoleName);
+    expect(res.body.data.permissions).toEqual(
+      expect.arrayContaining(['humidity:read', 'pump:control']),
+    );
 
-      // Clean up created role
-      await request(app.getHttpServer())
-        .delete(`/roles/${res.body.data.id}`)
-        .set('Authorization', `Bearer ${adminToken}`)
-        .expect(200);
-    },
-    30000,
-  );
+    // Clean up created role
+    await request(app.getHttpServer())
+      .delete(`/roles/${res.body.data.id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+  }, 30000);
 });

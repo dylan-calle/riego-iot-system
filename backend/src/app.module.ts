@@ -11,13 +11,7 @@ import { MqttModule } from './mqtt/mqtt.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
 @Module({
-  imports: [
-    PrismaModule,
-    AuthModule,
-    AuthzModule,
-    HumidityModule,
-    MqttModule,
-  ],
+  imports: [PrismaModule, AuthModule, AuthzModule, HumidityModule, MqttModule],
   controllers: [AppController],
   providers: [
     AppService,
@@ -32,4 +26,3 @@ import { PrismaModule } from './prisma/prisma.module.js';
   ],
 })
 export class AppModule {}
-

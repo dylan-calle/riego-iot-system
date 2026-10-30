@@ -2,15 +2,34 @@ import bcrypt from 'bcryptjs';
 import { db } from './db.js';
 
 export const SYSTEM_PERMISSIONS = [
-  { action: 'humidity:read', description: 'Read latest humidity, history, and stats' },
+  {
+    action: 'humidity:read',
+    description: 'Read latest humidity, history, and stats',
+  },
   { action: 'humidity:create', description: 'Create humidity sensor readings' },
-  { action: 'pump:read', description: 'Read irrigation pump status and history' },
+  {
+    action: 'pump:read',
+    description: 'Read irrigation pump status and history',
+  },
   { action: 'pump:control', description: 'Trigger irrigation pump ON or OFF' },
-  { action: 'roles:read', description: 'View system roles and their permissions' },
-  { action: 'roles:manage', description: 'Create, modify, and delete custom roles and assign permissions' },
-  { action: 'permissions:read', description: 'List all available system permissions' },
+  {
+    action: 'roles:read',
+    description: 'View system roles and their permissions',
+  },
+  {
+    action: 'roles:manage',
+    description:
+      'Create, modify, and delete custom roles and assign permissions',
+  },
+  {
+    action: 'permissions:read',
+    description: 'List all available system permissions',
+  },
   { action: 'users:read', description: 'View user list and user details' },
-  { action: 'users:manage', description: 'Create users and change user roles/permissions' },
+  {
+    action: 'users:manage',
+    description: 'Create users and change user roles/permissions',
+  },
 ];
 
 export async function seedDatabase() {
@@ -101,7 +120,9 @@ export async function seedDatabase() {
   // 3. Seed Admin User
   console.log('Seeding admin user: admin@gmail.com...');
   const adminRoleId = roleMap.get('ADMIN')!;
-  const existingAdmin = await orm.User.where({ email: 'admin@gmail.com' }).first();
+  const existingAdmin = await orm.User.where({
+    email: 'admin@gmail.com',
+  }).first();
   const hashedPassword = await bcrypt.hash('123456', 10);
 
   if (!existingAdmin) {
@@ -111,21 +132,28 @@ export async function seedDatabase() {
       name: 'Administrator',
       roleId: adminRoleId,
     });
-    console.log(` Created admin user (id: ${adminUser.id}, email: admin@gmail.com, roleId: ${adminRoleId})`);
+    console.log(
+      ` Created admin user (id: ${adminUser.id}, email: admin@gmail.com, roleId: ${adminRoleId})`,
+    );
   } else {
     await orm.User.where({ id: existingAdmin.id }).update({
       password: hashedPassword,
       roleId: adminRoleId,
       name: existingAdmin.name ?? 'Administrator',
     });
-    console.log(` Updated admin user (id: ${existingAdmin.id}, email: admin@gmail.com) with updated password and ADMIN role`);
+    console.log(
+      ` Updated admin user (id: ${existingAdmin.id}, email: admin@gmail.com) with updated password and ADMIN role`,
+    );
   }
 
   console.log('--- Database Seed Completed Successfully ---');
 }
 
 // Execute directly if run as a CLI script
-if (process.argv[1]?.endsWith('seed.ts') || process.argv[1]?.endsWith('seed.js')) {
+if (
+  process.argv[1]?.endsWith('seed.ts') ||
+  process.argv[1]?.endsWith('seed.js')
+) {
   seedDatabase()
     .then(async () => {
       await db.close();

@@ -25,7 +25,9 @@ export class AuthService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      this.logger.log('Verifying initial auth seed (permissions, roles, admin user)...');
+      this.logger.log(
+        'Verifying initial auth seed (permissions, roles, admin user)...',
+      );
       await seedDatabase();
       this.logger.log('Initial auth seed verified successfully');
     } catch (error: any) {
@@ -49,9 +51,13 @@ export class AuthService implements OnModuleInit {
       if (role) {
         roleName = role.name;
         // Role permissions
-        const rolePerms = await orm.RolePermission.where({ roleId: role.id }).all();
+        const rolePerms = await orm.RolePermission.where({
+          roleId: role.id,
+        }).all();
         for (const rp of rolePerms) {
-          const perm = await orm.Permission.where({ id: rp.permissionId }).first();
+          const perm = await orm.Permission.where({
+            id: rp.permissionId,
+          }).first();
           if (perm) {
             permissionSet.add(perm.action);
           }

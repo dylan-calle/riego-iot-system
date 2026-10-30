@@ -63,5 +63,3 @@ export class MqttController {
     return this.mqttService.getDiagnostics(deviceCode ?? 'esp32-01');
   }
 }
-
-

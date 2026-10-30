@@ -38,7 +38,9 @@ export class AuthzService {
 
     const rolesWithPermissions = await Promise.all(
       roles.map(async (role) => {
-        const rolePerms = await orm.RolePermission.where({ roleId: role.id }).all();
+        const rolePerms = await orm.RolePermission.where({
+          roleId: role.id,
+        }).all();
         const permissions: string[] = [];
         for (const rp of rolePerms) {
           const p = await orm.Permission.where({ id: rp.permissionId }).first();
@@ -98,7 +100,9 @@ export class AuthzService {
    */
   async createRole(dto: CreateRoleDto) {
     const orm = this.prisma.client.orm.public;
-    const existing = await orm.Role.where({ name: dto.name.toUpperCase() }).first();
+    const existing = await orm.Role.where({
+      name: dto.name.toUpperCase(),
+    }).first();
 
     if (existing) {
       throw new ConflictException(`Role '${dto.name}' already exists`);
@@ -146,13 +150,18 @@ export class AuthzService {
       throw new NotFoundException(`Role with id ${id} not found`);
     }
 
-    if (role.name === 'ADMIN' && dto.name && dto.name.toUpperCase() !== 'ADMIN') {
+    if (
+      role.name === 'ADMIN' &&
+      dto.name &&
+      dto.name.toUpperCase() !== 'ADMIN'
+    ) {
       throw new BadRequestException('Cannot rename the system ADMIN role');
     }
 
     const updatedData: { name?: string; description?: string | null } = {};
     if (dto.name) updatedData.name = dto.name.toUpperCase();
-    if (dto.description !== undefined) updatedData.description = dto.description;
+    if (dto.description !== undefined)
+      updatedData.description = dto.description;
 
     if (Object.keys(updatedData).length > 0) {
       await orm.Role.where({ id }).update(updatedData);
@@ -161,7 +170,9 @@ export class AuthzService {
     // Update permissions if provided
     if (dto.permissions !== undefined) {
       // Remove existing role permissions
-      const currentRolePerms = await orm.RolePermission.where({ roleId: id }).all();
+      const currentRolePerms = await orm.RolePermission.where({
+        roleId: id,
+      }).all();
       for (const rp of currentRolePerms) {
         await orm.RolePermission.where({ id: rp.id }).delete();
       }
@@ -232,15 +243,21 @@ export class AuthzService {
           const role = await orm.Role.where({ id: u.roleId }).first();
           if (role) {
             roleName = role.name;
-            const rps = await orm.RolePermission.where({ roleId: role.id }).all();
+            const rps = await orm.RolePermission.where({
+              roleId: role.id,
+            }).all();
             for (const rp of rps) {
-              const p = await orm.Permission.where({ id: rp.permissionId }).first();
+              const p = await orm.Permission.where({
+                id: rp.permissionId,
+              }).first();
               if (p) rolePermissions.push(p.action);
             }
           }
         }
 
-        const userPerms = await orm.UserPermission.where({ userId: u.id }).all();
+        const userPerms = await orm.UserPermission.where({
+          userId: u.id,
+        }).all();
         const customPermissions: string[] = [];
         for (const up of userPerms) {
           const p = await orm.Permission.where({ id: up.permissionId }).first();
@@ -279,7 +296,9 @@ export class AuthzService {
     const existing = await orm.User.where({ email: dto.email }).first();
 
     if (existing) {
-      throw new ConflictException(`User with email ${dto.email} already exists`);
+      throw new ConflictException(
+        `User with email ${dto.email} already exists`,
+      );
     }
 
     let roleId: number | null = dto.roleId ?? null;

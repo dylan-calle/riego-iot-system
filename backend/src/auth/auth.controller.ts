@@ -7,7 +7,10 @@ import {
   Post,
 } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
-import { CurrentUser, type AuthenticatedUser } from './decorators/current-user.decorator.js';
+import {
+  CurrentUser,
+  type AuthenticatedUser,
+} from './decorators/current-user.decorator.js';
 import { Public } from './decorators/public.decorator.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
