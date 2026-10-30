@@ -52,6 +52,16 @@ export class MqttController {
   async getDeviceStatus(@Query('deviceCode') deviceCode?: string) {
     return this.mqttService.getDeviceStatus(deviceCode ?? 'esp32-01');
   }
+
+  /**
+   * Last hardware diagnostics published by the ESP32 on home/garden/diagnostics
+   * (component health, wiring, battery, pump). Returns hasData=false until the first message arrives.
+   */
+  @Get('diagnostics')
+  @RequirePermissions(PERMISSIONS.PUMP_READ)
+  getDiagnostics(@Query('deviceCode') deviceCode?: string) {
+    return this.mqttService.getDiagnostics(deviceCode ?? 'esp32-01');
+  }
 }
 
 

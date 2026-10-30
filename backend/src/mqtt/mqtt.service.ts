@@ -9,6 +9,20 @@ import mqtt, { type MqttClient } from 'mqtt';
 import { HumidityService } from '../humidity/humidity.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
+/**
+ * Último mensaje de diagnóstico recibido de un dispositivo.
+ * `payload` se guarda tal cual lo publica el ESP32 (sin transformar): puede ser
+ * el JSON completo o el mensaje parcial de última voluntad (LWT) con
+ * generalStatus "OFFLINE".
+ */
+interface StoredDiagnostics {
+  payload: Record<string, unknown>;
+  /** Momento en que ESTE backend recibió el mensaje (no lo envía el ESP32). */
+  receivedAt: string;
+  /** true si el broker lo entregó como mensaje retenido (p. ej. al suscribirse). */
+  retained: boolean;
+}
+
 @Injectable()
 export class MqttService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MqttService.name);
@@ -25,8 +39,11 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     process.env.MQTT_DEVICE_STATUS_TOPIC ?? 'home/garden/status';
   private readonly thresholdConfigTopic =
     process.env.MQTT_THRESHOLD_CONFIG_TOPIC ?? 'home/garden/config/threshold';
+  private readonly diagnosticsTopic =
+    process.env.MQTT_DIAGNOSTICS_TOPIC ?? 'home/garden/diagnostics';
 
   // State
+  private readonly latestDiagnostics = new Map<string, StoredDiagnostics>();
   private pumpState: 'ON' | 'OFF' | 'UNKNOWN' = 'UNKNOWN';
   private activeIrrigationEventId: number | null = null;
   private lastPumpActionTime: number = 0;
@@ -65,22 +82,27 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     this.client.on('connect', () => {
       this.logger.log('Connected to MQTT broker successfully');
 
-      // Subscribe to moisture telemetry, pump status, and device heartbeat/LWT
+      // Subscribe to moisture telemetry, pump status, device heartbeat/LWT and hardware diagnostics
       this.client.subscribe(
-        [this.moistureTopic, this.pumpStatusTopic, this.deviceStatusTopic],
+        [
+          this.moistureTopic,
+          this.pumpStatusTopic,
+          this.deviceStatusTopic,
+          this.diagnosticsTopic,
+        ],
         (err) => {
           if (err) {
             this.logger.error(`Failed to subscribe to topics: ${err.message}`);
           } else {
             this.logger.log(
-              `Subscribed to: ${this.moistureTopic}, ${this.pumpStatusTopic}, ${this.deviceStatusTopic}`,
+              `Subscribed to: ${this.moistureTopic}, ${this.pumpStatusTopic}, ${this.deviceStatusTopic}, ${this.diagnosticsTopic}`,
             );
           }
         },
       );
     });
 
-    this.client.on('message', async (topic, payload) => {
+    this.client.on('message', async (topic, payload, packet) => {
       const message = payload.toString();
       if (topic === this.moistureTopic) {
         await this.handleMoistureMessage(message);
@@ -88,6 +110,8 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         await this.handlePumpStatusMessage(message);
       } else if (topic === this.deviceStatusTopic) {
         await this.handleDeviceStatusMessage(message);
+      } else if (topic === this.diagnosticsTopic) {
+        this.handleDiagnosticsMessage(message, packet.retain);
       }
     });
 
@@ -259,6 +283,47 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     } catch (err: any) {
       this.logger.error(
         `Error processing device status message "${rawMessage}": ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * Processes hardware diagnostics published by the ESP32 on home/garden/diagnostics.
+   * Full payload: {"deviceId","generalStatus":"ALL_OK"|"FALLO_DETECTADO","mode","thresholdMin",
+   * "thresholdMax","components":{esp32,sensor,relay,battery,pump,wiring}}.
+   * LWT payload (partial): {"deviceId","generalStatus":"OFFLINE","components":{"esp32":{...}}}.
+   * The last message per device is kept in memory exactly as received.
+   */
+  private handleDiagnosticsMessage(rawMessage: string, retained: boolean) {
+    try {
+      const parsed: unknown = JSON.parse(rawMessage);
+
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        this.logger.warn(`Received invalid diagnostics payload: ${rawMessage}`);
+        return;
+      }
+
+      const payload = parsed as Record<string, unknown>;
+      const deviceCode = String(
+        payload.deviceId ?? payload.deviceCode ?? 'esp32-01',
+      );
+
+      const previous = this.latestDiagnostics.get(deviceCode);
+      this.latestDiagnostics.set(deviceCode, {
+        payload,
+        receivedAt: new Date().toISOString(),
+        retained,
+      });
+
+      // Diagnostics arrive every ~3s: only log when the general status changes
+      if (previous?.payload.generalStatus !== payload.generalStatus) {
+        this.logger.log(
+          `Diagnostics for ${deviceCode}: generalStatus ${String(previous?.payload.generalStatus ?? 'N/A')} -> ${String(payload.generalStatus)}`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.error(
+        `Error processing diagnostics message "${rawMessage}": ${err.message}`,
       );
     }
   }
@@ -477,6 +542,32 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       maxHumidityThreshold: device?.maxHumidityThreshold ?? 70.0,
       pumpState: this.pumpState,
       lastEvent: lastEvent ?? null,
+    };
+  }
+
+  /**
+   * Get the last hardware diagnostics received from the device via MQTT.
+   * `data` is the raw payload published by the ESP32 (full or LWT/partial).
+   */
+  getDiagnostics(deviceCode: string = 'esp32-01') {
+    const stored = this.latestDiagnostics.get(deviceCode);
+
+    if (!stored) {
+      return {
+        hasData: false,
+        deviceCode,
+        receivedAt: null,
+        retained: null,
+        data: null,
+      };
+    }
+
+    return {
+      hasData: true,
+      deviceCode,
+      receivedAt: stored.receivedAt,
+      retained: stored.retained,
+      data: stored.payload,
     };
   }
 }
