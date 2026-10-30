@@ -3,6 +3,7 @@ import * as SecureStore from "expo-secure-store";
 
 import AdminPanel from "../components/AdminPanel";
 import HumedadDashboard from "../components/HumedadDashboard";
+import HardwareDiagnostics from "../components/HardwareDiagnostics";
 import {
   Alert,
   ActivityIndicator,
@@ -719,6 +720,7 @@ export default function Index() {
         )}
       </View>
       <HumedadDashboard token={token} hasPermission={puedeLeerHumedad} />
+      <HardwareDiagnostics token={token} enabled={puedeLeerBomba} />
       {/* Último riego */}
       <View style={styles.seccion}>
         <View style={styles.seccionCabecera}>
