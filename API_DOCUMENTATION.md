@@ -278,6 +278,7 @@ Content-Type: application/json
 ### 5. `GET /irrigation/pump`
 
 Returns the current active state of the pump and details regarding the latest irrigation cycle.
+The response also includes the latest retained circuit diagnostic from `home/garden/diagnostics` (when available), including the ESP32's pump current check. Device and relay state must not be presented as proof that the water pump is physically running unless the diagnostic reports `components.pump.status: "BOMBEANDO_OK"`.
 
 #### Example Request
 
@@ -291,6 +292,18 @@ Host: api.riego.pipexapp.com
 ```json
 {
   "pumpState": "ON",
+  "deviceStatus": "ONLINE",
+  "lastSeenAt": "2026-10-16T18:49:53.629Z",
+  "diagnosticsReceivedAt": "2026-10-16T18:49:54.000Z",
+  "diagnostics": {
+    "components": {
+      "pump": {
+        "ok": true,
+        "status": "BOMBEANDO_OK",
+        "running": true
+      }
+    }
+  },
   "lastEvent": {
     "id": 7,
     "deviceId": 2,
@@ -312,6 +325,8 @@ Host: api.riego.pipexapp.com
 ### 6. `POST /irrigation/pump`
 
 Sends a command via MQTT to the ESP32 to manually turn the irrigation pump **ON** or **OFF**.
+
+The backend only accepts the command when the ESP32 has sent a heartbeat within the last 30 seconds. A successful response means that the command was published to MQTT; it is **not** confirmation that the relay changed state. The app must wait for the ESP32's `home/garden/pump/status` report before showing the requested state. Irrigation events are recorded/closed from this reported status, not from the publish request.
 
 #### Request Body
 
@@ -335,10 +350,14 @@ Sends a command via MQTT to the ESP32 to manually turn the irrigation pump **ON*
 {
   "success": true,
   "action": "ON",
-  "pumpState": "ON",
-  "message": "Pump command 'ON' sent to esp32-01 via MQTT"
+  "command": "ON",
+  "deviceCode": "esp32-01",
+  "pumpState": "OFF",
+  "awaitingDeviceConfirmation": true
 }
 ```
+
+`pumpState` is the latest state reported by the ESP32 and may not yet match the requested command. When the device is offline or its heartbeat is older than 30 seconds, the endpoint responds with `503 Service Unavailable` instead of publishing a command.
 
 ---
 
