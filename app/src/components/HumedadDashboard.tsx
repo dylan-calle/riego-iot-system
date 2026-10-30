@@ -4,6 +4,7 @@ import { Animated, Easing, StyleSheet, Text, View } from "react-native";
 const API_URL =
   "https://api.riego.pipexapp.com/humidity/latest?deviceCode=esp32-01";
 const ALTO_TANQUE = 200;
+const MAX_EDAD_LECTURA_MS = 30_000;
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 
 const COLORES = {
@@ -51,10 +52,22 @@ function extraerLectura(json: any): Lectura | null {
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
+const parsearFechaLectura = (timestamp: string) => {
+  const normalizada = timestamp
+    .replace(" ", "T")
+    .replace(/(\.\d{3})\d+/, "$1")
+    .replace(/([+-]\d{2})$/, "$1:00");
+  return new Date(normalizada);
+};
 const formatearFecha = (d: Date) =>
   `${d.getDate()} ${MESES[d.getMonth()]}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
-export default function HumedadDashboard() {
+type HumedadDashboardProps = {
+  token: string | null;
+  hasPermission: boolean;
+};
+
+export default function HumedadDashboard({ token, hasPermission }: HumedadDashboardProps) {
   const [lectura, setLectura] = useState<Lectura | null>(null);
   const [vacio, setVacio] = useState(false);
   const [error, setError] = useState("");
@@ -64,10 +77,20 @@ export default function HumedadDashboard() {
 
   // Consulta al backend cada 5 segundos
   useEffect(() => {
+    if (!token || !hasPermission) {
+      setLectura(null);
+      setVacio(false);
+      setError("");
+      setUltimaConsulta(null);
+      return;
+    }
+
     let activo = true;
     const consultar = async () => {
       try {
-        const respuesta = await fetch(API_URL);
+        const respuesta = await fetch(API_URL, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
         if (!respuesta.ok) throw new Error("Error HTTP " + respuesta.status);
         const nueva = extraerLectura(await respuesta.json());
         if (!activo) return;
@@ -75,8 +98,10 @@ export default function HumedadDashboard() {
         setVacio(nueva === null);
         setError("");
         setUltimaConsulta(Date.now());
-      } catch (e: any) {
-        if (activo) setError(e.message ?? "No se pudo conectar con el servidor");
+      } catch (e: unknown) {
+        if (activo) {
+          setError(e instanceof Error ? e.message : "No se pudo conectar con el servidor");
+        }
       }
     };
     consultar();
@@ -85,7 +110,7 @@ export default function HumedadDashboard() {
       activo = false;
       clearInterval(intervalo);
     };
-  }, []);
+  }, [hasPermission, token]);
 
   // Reloj para "Actualizado hace..."
   useEffect(() => {
@@ -114,12 +139,18 @@ export default function HumedadDashboard() {
   const min = lectura?.minThreshold ?? 30;
   const max = lectura?.maxThreshold ?? 70;
 
-  const fechaLectura = lectura?.timestamp ? new Date(lectura.timestamp) : null;
+  const fechaLectura = lectura?.timestamp ? parsearFechaLectura(lectura.timestamp) : null;
   const fechaValida = fechaLectura && !isNaN(fechaLectura.getTime());
-  const minutosSinDatos = fechaValida
-    ? Math.floor((ahora - fechaLectura!.getTime()) / 60000)
-    : null;
-  const sensorInactivo = minutosSinDatos !== null && minutosSinDatos >= 10;
+  const edadLecturaMs = fechaValida ? ahora - fechaLectura.getTime() : null;
+  const lecturaActual =
+    edadLecturaMs !== null &&
+    edadLecturaMs >= -MAX_EDAD_LECTURA_MS &&
+    edadLecturaMs <= MAX_EDAD_LECTURA_MS;
+  const minutosSinDatos =
+    edadLecturaMs !== null && edadLecturaMs > 0
+      ? Math.floor(edadLecturaMs / 60000)
+      : null;
+  const sensorInactivo = Boolean(lectura) && !lecturaActual;
 
   const segundos = ultimaConsulta ? Math.max(0, Math.round((ahora - ultimaConsulta) / 1000)) : null;
   const hace =
@@ -135,50 +166,81 @@ export default function HumedadDashboard() {
     <View style={styles.seccion}>
       <Text style={styles.titulo}>Humedad del suelo</Text>
 
-      <View style={styles.cuerpo}>
-        <View style={styles.tanque}>
-          <Animated.View style={[styles.relleno, { height: altura, backgroundColor: color }]} />
-          <View style={[styles.marca, { bottom: (ALTO_TANQUE * min) / 100 }]} />
-          <View style={[styles.marca, { bottom: (ALTO_TANQUE * max) / 100 }]} />
-        </View>
-
-        <View style={styles.info}>
-          <Text style={styles.valor}>
-            {lectura ? `${Number(lectura.humidity.toFixed(1))} %` : "--"}
-          </Text>
-          <Text style={[styles.estado, { color }]}>{info ? info.titulo : "Esperando datos"}</Text>
-          {info ? <Text style={styles.detalle}>{info.detalle}</Text> : null}
-          <Text style={styles.hace}>{hace}</Text>
-        </View>
-      </View>
-
-      {fechaValida ? (
-        <Text style={styles.nota}>Última lectura del sensor: {formatearFecha(fechaLectura!)}</Text>
-      ) : null}
-
-      {vacio ? (
+      {!token || !hasPermission ? (
         <Text style={styles.nota}>
-          Aún no hay lecturas del sensor. Aparecerán cuando el ESP32 envíe datos.
+          {!token
+            ? "Inicia sesión para consultar las lecturas del sensor."
+            : "Tu cuenta no tiene permiso para consultar la humedad."}
         </Text>
-      ) : null}
+      ) : (
+        <>
+          <View style={styles.cuerpo}>
+            {lecturaActual ? (
+              <View style={styles.tanque}>
+                <Animated.View
+                  style={[styles.relleno, { height: altura, backgroundColor: color }]}
+                />
+                <View style={[styles.marca, { bottom: (ALTO_TANQUE * min) / 100 }]} />
+                <View style={[styles.marca, { bottom: (ALTO_TANQUE * max) / 100 }]} />
+              </View>
+            ) : null}
 
-      {sensorInactivo ? (
-        <View style={styles.aviso}>
-          <Text style={styles.avisoTexto}>
-            El sensor no envía datos hace {minutosSinDatos} min. Revisa que el ESP32 esté encendido y conectado.
-          </Text>
-        </View>
-      ) : null}
+            <View style={styles.info}>
+              <Text style={styles.valor}>
+                {lecturaActual && lectura
+                  ? `${Number(lectura.humidity.toFixed(1))} %`
+                  : "--"}
+              </Text>
+              <Text style={[styles.estado, { color: lecturaActual ? color : COLORES.critico }]}>
+                {lecturaActual
+                  ? info?.titulo ?? "Esperando datos"
+                  : lectura
+                    ? "Sin lectura reciente"
+                    : "Esperando datos"}
+              </Text>
+              {lecturaActual && info ? <Text style={styles.detalle}>{info.detalle}</Text> : null}
+              <Text style={styles.hace}>
+                {lecturaActual ? hace : "Esperando una lectura reciente del sensor"}
+              </Text>
+            </View>
+          </View>
 
-      {error ? (
-        <Text style={styles.error}>
-          No se pudo actualizar la humedad ({error}). Se reintenta cada 5 segundos.
-        </Text>
-      ) : null}
+          {lectura && fechaValida ? (
+            <Text style={styles.nota}>
+              {lecturaActual ? "Lectura del sensor" : "Último dato guardado (no actual)"}
+              {`: ${Number(lectura.humidity.toFixed(1))} % · ${formatearFecha(fechaLectura)}`}
+            </Text>
+          ) : null}
 
-      <Text style={styles.nota}>
-        Las rayas del tanque marcan {min} % (mínimo) y {max} % (máximo).
-      </Text>
+          {vacio ? (
+            <Text style={styles.nota}>
+              Aún no hay lecturas del sensor. Aparecerán cuando el ESP32 envíe datos.
+            </Text>
+          ) : null}
+
+          {sensorInactivo ? (
+            <View style={styles.aviso}>
+              <Text style={styles.avisoTexto}>
+                {minutosSinDatos === null
+                  ? "No se puede confirmar cuándo se tomó este dato. Revisa que el ESP32 esté encendido y conectado."
+                  : `El sensor no envía datos hace ${minutosSinDatos} min. El valor anterior se muestra solo como referencia.`}
+              </Text>
+            </View>
+          ) : null}
+
+          {error ? (
+            <Text style={styles.error}>
+              No se pudo actualizar la humedad ({error}). Se reintenta cada 5 segundos.
+            </Text>
+          ) : null}
+
+          {lecturaActual ? (
+            <Text style={styles.nota}>
+              Las rayas del tanque marcan {min} % (mínimo) y {max} % (máximo).
+            </Text>
+          ) : null}
+        </>
+      )}
     </View>
   );
 }

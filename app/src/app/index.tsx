@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import * as SecureStore from "expo-secure-store";
 
 import HumedadDashboard from "../components/HumedadDashboard";
 import {
@@ -7,6 +8,7 @@ import {
   Animated,
   Easing,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -19,6 +21,7 @@ import {
 
 const API_URL = "https://api.riego.pipexapp.com/irrigation/pump";
 const API_BASE = API_URL.replace("/irrigation/pump", "");
+const TOKEN_STORAGE_KEY = "riego-iot.access-token";
 
 const COLORES = {
   fondo: "#F1F5F2",
@@ -30,6 +33,7 @@ const COLORES = {
   tierraClara: "#E6D9CB",
   alerta: "#C2571A",
   alertaClara: "#FBEBDD",
+  bien: "#2E9E4F",
   linea: "#D5DFDB",
 };
 
@@ -47,8 +51,54 @@ type EventoRiego = {
 
 type EstadoBomba = {
   pumpState: string;
+  deviceStatus?: string;
+  lastSeenAt?: string | null;
+  diagnostics?: {
+    generalStatus?: string;
+    components?: {
+      pump?: {
+        ok?: boolean;
+        status?: string;
+        running?: boolean;
+      };
+    };
+  } | null;
+  diagnosticsReceivedAt?: string | null;
   lastEvent: EventoRiego | null;
 };
+
+type Usuario = {
+  id: number;
+  email: string;
+  name: string | null;
+  role: string;
+  roleId: number | null;
+  permissions: string[];
+};
+
+type AuthResponse = {
+  success: boolean;
+  accessToken: string;
+  user: Usuario;
+};
+
+const guardarToken = (token: string) =>
+  Platform.OS === "web"
+    ? Promise.resolve()
+    : SecureStore.setItemAsync(TOKEN_STORAGE_KEY, token);
+
+const borrarToken = () =>
+  Platform.OS === "web"
+    ? Promise.resolve()
+    : SecureStore.deleteItemAsync(TOKEN_STORAGE_KEY);
+
+const obtenerToken = () =>
+  Platform.OS === "web"
+    ? Promise.resolve(null)
+    : SecureStore.getItemAsync(TOKEN_STORAGE_KEY);
+
+const mensajeDeError = (datos: { message?: string | string[] }, fallback: string) =>
+  Array.isArray(datos.message) ? datos.message.join("\n") : datos.message ?? fallback;
 
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 
@@ -121,21 +171,58 @@ export default function Index() {
   const [ultima, setUltima] = useState<number | null>(null);
   const [ahora, setAhora] = useState(Date.now());
 
-  // Authentication state
   const [token, setToken] = useState<string | null>(null);
-  const [usuario, setUsuario] = useState<{ email: string; role: string } | null>(null);
+  const [usuario, setUsuario] = useState<Usuario | null>(null);
+  const [sesionLista, setSesionLista] = useState(false);
   const [modalLoginVisible, setModalLoginVisible] = useState(false);
-  const [loginEmail, setLoginEmail] = useState("admin@gmail.com");
-  const [loginPassword, setLoginPassword] = useState("123456");
+  const [modoAutenticacion, setModoAutenticacion] = useState<"login" | "registro">("login");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [nombre, setNombre] = useState("");
   const [autenticando, setAutenticando] = useState(false);
 
   const pulso = useRef(new Animated.Value(0)).current;
   const controlEnCurso = useRef(false);
-  const encendida = estado?.pumpState === "ON";
+  const heartbeatMs = estado?.lastSeenAt ? Date.parse(estado.lastSeenAt) : Number.NaN;
+  const equipoConectado =
+    estado?.deviceStatus === "ONLINE" &&
+    Number.isFinite(heartbeatMs) &&
+    ahora - heartbeatMs >= -30_000 &&
+    ahora - heartbeatMs <= 30_000;
+  const diagnosticoMs = estado?.diagnosticsReceivedAt
+    ? Date.parse(estado.diagnosticsReceivedAt)
+    : Number.NaN;
+  const diagnosticoReciente =
+    equipoConectado &&
+    Number.isFinite(diagnosticoMs) &&
+    ahora - diagnosticoMs >= -15_000 &&
+    ahora - diagnosticoMs <= 15_000;
+  const bombaReportada = estado?.diagnostics?.components?.pump;
+  const bombaFuncionando =
+    estado?.pumpState === "ON" &&
+    diagnosticoReciente &&
+    bombaReportada?.ok === true &&
+    bombaReportada.status === "BOMBEANDO_OK";
+  const falloBomba =
+    estado?.pumpState === "ON" &&
+    diagnosticoReciente &&
+    bombaReportada?.ok === false;
+  const encendida = equipoConectado && estado?.pumpState === "ON";
+  const puedeLeerBomba = usuario?.permissions.includes("pump:read") ?? false;
+  const puedeControlarBomba = usuario?.permissions.includes("pump:control") ?? false;
+  const puedeLeerHumedad = usuario?.permissions.includes("humidity:read") ?? false;
   const estadoConocido =
-    estado?.pumpState === "ON" || estado?.pumpState === "OFF";
+    equipoConectado && (estado?.pumpState === "ON" || estado?.pumpState === "OFF");
 
   const cargarEstado = useCallback(async () => {
+    if (!sesionLista) return;
+    if (!token || !puedeLeerBomba) {
+      setEstado(null);
+      setCargando(false);
+      setRefrescando(false);
+      return;
+    }
+
     try {
       const headers: Record<string, string> = {};
       if (token) {
@@ -144,7 +231,10 @@ export default function Index() {
       const respuesta = await fetch(API_URL, { method: "GET", headers });
       if (!respuesta.ok) {
         if (respuesta.status === 401) {
-          throw new Error("No autenticado (401). Inicie sesión para consultar estado.");
+          await borrarToken();
+          setToken(null);
+          setUsuario(null);
+          throw new Error("La sesión expiró. Inicia sesión nuevamente.");
         }
         throw new Error("Error HTTP " + respuesta.status);
       }
@@ -158,9 +248,13 @@ export default function Index() {
       setCargando(false);
       setRefrescando(false);
     }
-  }, [token]);
+  }, [puedeLeerBomba, sesionLista, token]);
 
   const handleTogglePump = async (targetCommand: "ON" | "OFF") => {
+    if (!puedeControlarBomba) {
+      setModalLoginVisible(true);
+      return;
+    }
     if (controlEnCurso.current) return;
 
     controlEnCurso.current = true;
@@ -180,18 +274,92 @@ export default function Index() {
       });
 
       if (!respuesta.ok) {
-        if (respuesta.status === 401 || respuesta.status === 403) {
+        if (respuesta.status === 401) {
+          await borrarToken();
+          setToken(null);
+          setUsuario(null);
+          setModoAutenticacion("login");
           setModalLoginVisible(true);
-          throw new Error(`Permisos insuficientes (${respuesta.status}). Inicie sesión como administrador.`);
+          throw new Error("La sesión expiró. Inicia sesión nuevamente.");
         }
-        throw new Error(`Error HTTP ${respuesta.status}`);
+        if (respuesta.status === 403) {
+          throw new Error("Tu cuenta no tiene permiso para controlar la bomba.");
+        }
+        const detalle = (await respuesta.json()) as { message?: string | string[] };
+        throw new Error(
+          mensajeDeError(detalle, `Error HTTP ${respuesta.status}`),
+        );
       }
 
-      setEstado((actual) => ({
-        pumpState: targetCommand,
-        lastEvent: actual?.lastEvent ?? null,
-      }));
-      await cargarEstado();
+      let confirmado = false;
+      let falloDetectado = false;
+      for (let intento = 0; intento < 10; intento += 1) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+        const estadoRespuesta = await fetch(API_URL, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!estadoRespuesta.ok) {
+          throw new Error(`No se pudo verificar el estado de la bomba (${estadoRespuesta.status}).`);
+        }
+
+        const nuevoEstado: EstadoBomba = await estadoRespuesta.json();
+        setEstado(nuevoEstado);
+        setUltima(Date.now());
+        const heartbeat = nuevoEstado.lastSeenAt
+          ? Date.parse(nuevoEstado.lastSeenAt)
+          : Number.NaN;
+        const conectado =
+          nuevoEstado.deviceStatus === "ONLINE" &&
+          Number.isFinite(heartbeat) &&
+          Date.now() - heartbeat >= -30_000 &&
+          Date.now() - heartbeat <= 30_000;
+
+        if (!conectado) {
+          break;
+        }
+        if (nuevoEstado.pumpState === targetCommand) {
+          if (targetCommand === "OFF") {
+            confirmado = true;
+            break;
+          }
+
+          const diagnosticoRecibido = nuevoEstado.diagnosticsReceivedAt
+            ? Date.parse(nuevoEstado.diagnosticsReceivedAt)
+            : Number.NaN;
+          const diagnosticoVigente =
+            Number.isFinite(diagnosticoRecibido) &&
+            Date.now() - diagnosticoRecibido >= -15_000 &&
+            Date.now() - diagnosticoRecibido <= 15_000;
+          const bomba = nuevoEstado.diagnostics?.components?.pump;
+          if (diagnosticoVigente && bomba?.ok === true && bomba.status === "BOMBEANDO_OK") {
+            confirmado = true;
+            break;
+          }
+          if (diagnosticoVigente && bomba?.ok === false) {
+            falloDetectado = true;
+            break;
+          }
+        }
+      }
+
+      if (!confirmado) {
+        Alert.alert(
+          falloDetectado ? "Fallo detectado en la bomba" : "Sin confirmación de la bomba",
+          falloDetectado
+            ? "El ESP32 activó el relé, pero su diagnóstico indica que la bomba no está funcionando. Revisa la bomba, los cables y la alimentación."
+            : targetCommand === "ON"
+              ? "El comando se envió, pero no se confirmó que la bomba esté bombeando. Verifica el ESP32 y espera una lectura de diagnóstico."
+              : "El comando se envió, pero el ESP32 no confirmó el cambio de estado.",
+        );
+        return;
+      }
+
+      Alert.alert(
+        targetCommand === "ON" ? "Bomba funcionando" : "Bomba apagada",
+        targetCommand === "ON"
+          ? "El ESP32 confirmó el relé y detectó corriente en la bomba."
+          : "El ESP32 confirmó que el relé se apagó.",
+      );
     } catch (error: unknown) {
       const detalle =
         error instanceof Error ? error.message : "Error desconocido";
@@ -205,45 +373,132 @@ export default function Index() {
     }
   };
 
-  const handleLogin = async () => {
-    if (!loginEmail || !loginPassword) {
-      Alert.alert("Campos requeridos", "Por favor ingrese email y contraseña.");
+  const handleAutenticacion = async () => {
+    const email = loginEmail.trim().toLowerCase();
+    if (!email || !loginPassword || (modoAutenticacion === "registro" && !nombre.trim())) {
+      Alert.alert(
+        "Campos requeridos",
+        modoAutenticacion === "registro"
+          ? "Completa tu nombre, correo y contraseña."
+          : "Ingresa tu correo y contraseña.",
+      );
       return;
     }
+
     setAutenticando(true);
     try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
+      const endpoint = modoAutenticacion === "registro" ? "register" : "login";
+      const body =
+        modoAutenticacion === "registro"
+          ? { name: nombre.trim(), email, password: loginPassword }
+          : { email, password: loginPassword };
+      const res = await fetch(`${API_BASE}/auth/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+        body: JSON.stringify(body),
       });
-      const data = await res.json();
+      const data = (await res.json()) as AuthResponse & { message?: string | string[] };
       if (!res.ok) {
-        throw new Error(data.message ?? "Credenciales inválidas");
+        throw new Error(
+          mensajeDeError(
+            data,
+            modoAutenticacion === "registro"
+              ? "No se pudo crear la cuenta."
+              : "Correo o contraseña incorrectos.",
+          ),
+        );
       }
+      if (!data.accessToken || !data.user || !Array.isArray(data.user.permissions)) {
+        throw new Error("El servidor devolvió una respuesta de autenticación inválida.");
+      }
+
+      await guardarToken(data.accessToken);
       setToken(data.accessToken);
       setUsuario(data.user);
       setModalLoginVisible(false);
+      setLoginPassword("");
+      setNombre("");
       setError("");
-      Alert.alert("Sesión iniciada", `Bienvenido ${data.user.email} (${data.user.role})`);
-    } catch (err: any) {
-      Alert.alert("Error de autenticación", err.message ?? "No se pudo iniciar sesión");
+      Alert.alert(
+        modoAutenticacion === "registro" ? "Cuenta creada" : "Sesión iniciada",
+        `Bienvenido ${data.user.name ?? data.user.email} (${data.user.role})`,
+      );
+    } catch (err: unknown) {
+      const detalle =
+        err instanceof Error ? err.message : "No se pudo completar la autenticación.";
+      Alert.alert("Error de autenticación", detalle);
     } finally {
       setAutenticando(false);
     }
   };
 
-  const handleLogout = () => {
-    setToken(null);
-    setUsuario(null);
+  const handleLogout = async () => {
+    try {
+      await borrarToken();
+      setToken(null);
+      setUsuario(null);
+      setEstado(null);
+      setError("");
+    } catch (err: unknown) {
+      const detalle =
+        err instanceof Error ? err.message : "No se pudo cerrar la sesión de forma segura.";
+      Alert.alert("Error", detalle);
+    }
   };
+
+  useEffect(() => {
+    let activo = true;
+    const restaurarSesion = async () => {
+      try {
+        const tokenGuardado = await obtenerToken();
+        if (!activo || !tokenGuardado) return;
+
+        const respuesta = await fetch(`${API_BASE}/auth/me`, {
+          headers: { Authorization: `Bearer ${tokenGuardado}` },
+        });
+        if (respuesta.status === 401) {
+          await borrarToken();
+          return;
+        }
+        const datos = (await respuesta.json()) as {
+          user?: Usuario;
+          message?: string | string[];
+        };
+        if (!respuesta.ok) {
+          throw new Error(mensajeDeError(datos, `Error HTTP ${respuesta.status}`));
+        }
+        if (!datos.user || !Array.isArray(datos.user.permissions)) {
+          throw new Error("El servidor devolvió un perfil de usuario inválido.");
+        }
+
+        if (activo) {
+          setToken(tokenGuardado);
+          setUsuario(datos.user);
+        }
+      } catch (err: unknown) {
+        if (activo) {
+          const detalle =
+            err instanceof Error ? err.message : "No se pudo validar la sesión guardada.";
+          setError(`No se pudo validar la sesión guardada. ${detalle}`);
+        }
+      } finally {
+        if (activo) setSesionLista(true);
+      }
+    };
+
+    void restaurarSesion();
+    return () => {
+      activo = false;
+    };
+  }, []);
 
   // Consulta al backend cada 5 segundos
   useEffect(() => {
+    if (!sesionLista) return;
     cargarEstado();
     const intervalo = setInterval(cargarEstado, 5000);
     return () => clearInterval(intervalo);
-  }, [cargarEstado]);
+  }, [cargarEstado, sesionLista]);
 
   // Reloj para el texto "Actualizado hace..."
   useEffect(() => {
@@ -253,7 +508,7 @@ export default function Index() {
 
   // Onda que late solo cuando la bomba está encendida
   useEffect(() => {
-    if (!encendida) {
+    if (!bombaFuncionando) {
       pulso.setValue(0);
       return;
     }
@@ -267,7 +522,7 @@ export default function Index() {
     );
     animacion.start();
     return () => animacion.stop();
-  }, [encendida, pulso]);
+  }, [bombaFuncionando, pulso]);
 
   if (cargando) {
     return (
@@ -278,7 +533,11 @@ export default function Index() {
     );
   }
 
-  const colorEstado = encendida ? COLORES.agua : COLORES.reposo;
+  const colorEstado = bombaFuncionando
+    ? COLORES.agua
+    : falloBomba
+      ? COLORES.alerta
+      : COLORES.reposo;
   const evento = estado?.lastEvent;
 
   const escala = pulso.interpolate({ inputRange: [0, 1], outputRange: [1, 1.45] });
@@ -331,7 +590,10 @@ export default function Index() {
           </View>
         ) : (
           <Pressable
-            onPress={() => setModalLoginVisible(true)}
+            onPress={() => {
+              setModoAutenticacion("login");
+              setModalLoginVisible(true);
+            }}
             style={styles.loginPill}
           >
             <Text style={styles.loginPillTexto}>🔑 Iniciar sesión</Text>
@@ -353,7 +615,7 @@ export default function Index() {
 
       {/* Protagonista: la bomba */}
       <View style={styles.heroZona}>
-        {encendida ? (
+        {bombaFuncionando ? (
           <Animated.View
             style={[
               styles.onda,
@@ -363,32 +625,83 @@ export default function Index() {
         ) : null}
         <View style={[styles.circulo, { borderColor: colorEstado }]}>
           <Text style={styles.heroEtiqueta}>Bomba</Text>
-          <Text style={[styles.heroEstado, { color: encendida ? COLORES.agua : COLORES.tintaSuave }]}>
-            {estado ? (encendida ? "Encendida" : "Apagada") : "Sin datos"}
+          <Text style={[styles.heroEstado, { color: colorEstado }]}>
+            {equipoConectado
+              ? estado?.pumpState === "ON"
+                ? falloBomba
+                  ? "Fallo detectado"
+                  : bombaFuncionando
+                    ? "Bombeando"
+                    : "Relé activado"
+                : estado?.pumpState === "OFF"
+                  ? "Apagada"
+                  : "Sin confirmación"
+              : "Sin conexión"}
           </Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ disabled: isSubmitting || !estadoConocido }}
-          disabled={isSubmitting || !estadoConocido}
-          onPress={() => handleTogglePump(encendida ? "OFF" : "ON")}
-          style={({ pressed }) => [
-            styles.botonBomba,
-            encendida ? styles.botonApagar : styles.botonEncender,
-            (pressed || isSubmitting) && styles.botonPresionado,
-            (isSubmitting || !estadoConocido) && styles.botonDeshabilitado,
+        <Text
+          style={[
+            styles.estadoDispositivo,
+            { color: equipoConectado && !falloBomba ? COLORES.bien : COLORES.alerta },
           ]}
         >
-          {isSubmitting ? (
-            <ActivityIndicator color={COLORES.fondo} />
-          ) : (
-            <Text style={styles.textoBotonBomba}>
-              {encendida ? "Apagar bomba" : "Encender bomba"}
-            </Text>
-          )}
-        </Pressable>
+          {!equipoConectado
+            ? "ESP32 desconectado"
+            : falloBomba
+              ? "ESP32 conectado · bomba no detectada"
+              : bombaFuncionando
+                ? "ESP32 conectado · corriente detectada"
+                : encendida
+                  ? "ESP32 conectado · verificando bomba"
+                  : "ESP32 conectado"}
+        </Text>
+        {!token ? (
+          <Pressable
+            style={[styles.botonBomba, styles.botonEncender]}
+            onPress={() => {
+              setModoAutenticacion("login");
+              setModalLoginVisible(true);
+            }}
+          >
+            <Text style={styles.textoBotonBomba}>Inicia sesión para controlar</Text>
+          </Pressable>
+        ) : !puedeControlarBomba || !puedeLeerBomba ? (
+          <Text style={styles.permisoTexto}>
+            {puedeControlarBomba
+              ? "Tu cuenta no tiene permiso para consultar el estado de la bomba."
+              : "Tu cuenta puede consultar el estado, pero no controlar la bomba."}
+          </Text>
+        ) : !equipoConectado ? (
+          <View style={[styles.botonBomba, styles.botonDeshabilitado, styles.botonNoDisponible]}>
+            <Text style={styles.textoBotonBomba}>Bomba no disponible</Text>
+          </View>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: isSubmitting || !estadoConocido }}
+            disabled={isSubmitting || !estadoConocido}
+            onPress={() => handleTogglePump(encendida ? "OFF" : "ON")}
+            style={({ pressed }) => [
+              styles.botonBomba,
+              encendida ? styles.botonApagar : styles.botonEncender,
+              (pressed || isSubmitting) && styles.botonPresionado,
+              (isSubmitting || !estadoConocido) && styles.botonDeshabilitado,
+            ]}
+          >
+            {isSubmitting ? (
+              <View style={styles.esperandoConfirmacion}>
+                <ActivityIndicator color={COLORES.fondo} />
+                <Text style={styles.textoBotonBomba}>Esperando confirmación</Text>
+              </View>
+            ) : (
+              <Text style={styles.textoBotonBomba}>
+                {encendida ? "Apagar bomba" : "Encender bomba"}
+              </Text>
+            )}
+          </Pressable>
+        )}
       </View>
-   <HumedadDashboard />
+      <HumedadDashboard token={token} hasPermission={puedeLeerHumedad} />
       {/* Último riego */}
       <View style={styles.seccion}>
         <View style={styles.seccionCabecera}>
@@ -431,54 +744,100 @@ export default function Index() {
         onRequestClose={() => setModalLoginVisible(false)}
       >
         <View style={styles.modalFondo}>
-          <View style={styles.modalContenedor}>
-            <Text style={styles.modalTitulo}>Iniciar sesión</Text>
-            <Text style={styles.modalSubtitulo}>
-              Acceso seguro con control de permisos
-            </Text>
+          <ScrollView
+            style={styles.modalScroll}
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.modalContenedor}>
+              <Text style={styles.modalTitulo}>
+                {modoAutenticacion === "registro" ? "Crear cuenta" : "Iniciar sesión"}
+              </Text>
+              <Text style={styles.modalSubtitulo}>
+                {modoAutenticacion === "registro"
+                  ? "Tu cuenta nueva tendrá acceso de solo lectura."
+                  : "Accede para consultar el riego; las acciones dependen de tus permisos."}
+              </Text>
 
-            <Text style={styles.inputLabel}>Correo electrónico</Text>
-            <TextInput
-              style={styles.input}
-              value={loginEmail}
-              onChangeText={setLoginEmail}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              placeholder="admin@gmail.com"
-              placeholderTextColor={COLORES.reposo}
-            />
+              {modoAutenticacion === "registro" ? (
+                <>
+                  <Text style={styles.inputLabel}>Nombre</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={nombre}
+                    onChangeText={setNombre}
+                    autoCapitalize="words"
+                    placeholder="Tu nombre"
+                    placeholderTextColor={COLORES.reposo}
+                    editable={!autenticando}
+                  />
+                </>
+              ) : null}
 
-            <Text style={styles.inputLabel}>Contraseña</Text>
-            <TextInput
-              style={styles.input}
-              value={loginPassword}
-              onChangeText={setLoginPassword}
-              secureTextEntry
-              placeholder="123456"
-              placeholderTextColor={COLORES.reposo}
-            />
+              <Text style={styles.inputLabel}>Correo electrónico</Text>
+              <TextInput
+                style={styles.input}
+                value={loginEmail}
+                onChangeText={setLoginEmail}
+                autoCapitalize="none"
+                autoComplete="email"
+                keyboardType="email-address"
+                placeholder="tu@correo.com"
+                placeholderTextColor={COLORES.reposo}
+                editable={!autenticando}
+              />
 
-            <View style={styles.modalBotones}>
+              <Text style={styles.inputLabel}>Contraseña</Text>
+              <TextInput
+                style={styles.input}
+                value={loginPassword}
+                onChangeText={setLoginPassword}
+                secureTextEntry
+                autoComplete={modoAutenticacion === "registro" ? "new-password" : "current-password"}
+                placeholder={
+                  modoAutenticacion === "registro" ? "Mínimo 6 caracteres" : "Tu contraseña"
+                }
+                placeholderTextColor={COLORES.reposo}
+                editable={!autenticando}
+              />
+
+              <View style={styles.modalBotones}>
+                <Pressable
+                  style={[styles.modalBoton, styles.botonCancelar]}
+                  onPress={() => setModalLoginVisible(false)}
+                  disabled={autenticando}
+                >
+                  <Text style={styles.botonCancelarTexto}>Cancelar</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.modalBoton, styles.botonEntrar]}
+                  onPress={handleAutenticacion}
+                  disabled={autenticando}
+                >
+                  {autenticando ? (
+                    <ActivityIndicator color={COLORES.fondo} size="small" />
+                  ) : (
+                    <Text style={styles.botonEntrarTexto}>
+                      {modoAutenticacion === "registro" ? "Crear cuenta" : "Ingresar"}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
               <Pressable
-                style={[styles.modalBoton, styles.botonCancelar]}
-                onPress={() => setModalLoginVisible(false)}
+                onPress={() =>
+                  setModoAutenticacion((modo) => (modo === "login" ? "registro" : "login"))
+                }
                 disabled={autenticando}
+                style={styles.cambiarModo}
               >
-                <Text style={styles.botonCancelarTexto}>Cancelar</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.modalBoton, styles.botonEntrar]}
-                onPress={handleLogin}
-                disabled={autenticando}
-              >
-                {autenticando ? (
-                  <ActivityIndicator color={COLORES.fondo} size="small" />
-                ) : (
-                  <Text style={styles.botonEntrarTexto}>Ingresar</Text>
-                )}
+                <Text style={styles.cambiarModoTexto}>
+                  {modoAutenticacion === "registro"
+                    ? "¿Ya tienes cuenta? Inicia sesión"
+                    : "¿No tienes cuenta? Regístrate"}
+                </Text>
               </Pressable>
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
     </ScrollView>
@@ -551,10 +910,39 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
+  permisoTexto: {
+    marginTop: 18,
+    color: COLORES.tintaSuave,
+    fontSize: 14,
+    textAlign: "center",
+  },
+  estadoDispositivo: {
+    marginTop: -18,
+    marginBottom: 4,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  botonNoDisponible: {
+    backgroundColor: COLORES.reposo,
+  },
+  esperandoConfirmacion: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
 
   modalFondo: {
     flex: 1,
     backgroundColor: "rgba(18, 48, 47, 0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalScroll: {
+    flex: 1,
+    width: "100%",
+  },
+  modalScrollContent: {
+    flexGrow: 1,
     justifyContent: "center",
     alignItems: "center",
     padding: 24,
@@ -625,6 +1013,16 @@ const styles = StyleSheet.create({
   },
   botonEntrarTexto: {
     color: COLORES.fondo,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  cambiarModo: {
+    alignSelf: "center",
+    paddingTop: 18,
+    paddingBottom: 4,
+  },
+  cambiarModoTexto: {
+    color: COLORES.agua,
     fontWeight: "700",
     fontSize: 14,
   },

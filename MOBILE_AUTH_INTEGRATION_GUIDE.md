@@ -333,8 +333,14 @@ When an API call fails authentication or authorization, the backend responds wit
 
 Follow these exact architectural steps to integrate authentication into the Expo app (`app/`).
 
+### Current application implementation
+
+The current app already provides login and self-service registration in the Home screen modal. On iOS and Android it stores the JWT with `expo-secure-store`, validates the saved session with `GET /auth/me` at startup, and clears expired sessions. The web build keeps the token in memory only; it does not persist authentication in browser storage.
+
+The interface uses the permissions returned by the backend to decide whether to show sensor readings and pump controls. Self-service registrations receive the backend's default `VIEWER` role, so they can read status and humidity but cannot manually control the pump. The examples below remain an architectural reference for expanding authentication beyond the current Home screen.
+
 ### 7.1 Dependencies
-Install `expo-secure-store` for safe persistent storage on iOS/Android, with fallback for web:
+Install `expo-secure-store` for safe persistent storage on iOS/Android. The current web build keeps the session in memory rather than persisting the JWT in browser storage:
 
 ```bash
 npx expo install expo-secure-store
