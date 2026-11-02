@@ -8,6 +8,10 @@ import {
   Post,
   Put,
 } from '@nestjs/common';
+import {
+  CurrentUser,
+  type AuthenticatedUser,
+} from '../auth/decorators/current-user.decorator.js';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator.js';
 import { PERMISSIONS } from '../auth/permissions.js';
 import { AuthzService } from './authz.service.js';
@@ -16,6 +20,7 @@ import { AssignRoleDto } from './dto/assign-role.dto.js';
 import { CreateRoleDto } from './dto/create-role.dto.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateRoleDto } from './dto/update-role.dto.js';
+import { UpdateUserDto } from './dto/update-user.dto.js';
 
 @Controller()
 export class AuthzController {
@@ -118,5 +123,29 @@ export class AuthzController {
     @Body() dto: AssignPermissionsDto,
   ) {
     return this.authzService.assignDirectPermissions(id, dto);
+  }
+
+  /**
+   * Update basic user data (name, email, password)
+   */
+  @Put('users/:id')
+  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  async updateUser(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateUserDto,
+  ) {
+    return this.authzService.updateUser(id, dto);
+  }
+
+  /**
+   * Delete a user
+   */
+  @Delete('users/:id')
+  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  async deleteUser(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() requester: AuthenticatedUser,
+  ) {
+    return this.authzService.deleteUser(id, requester);
   }
 }

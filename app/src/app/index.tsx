@@ -5,10 +5,10 @@ import AdminPanel from "../components/AdminPanel";
 import HumedadDashboard from "../components/HumedadDashboard";
 import HardwareDiagnostics from "../components/HardwareDiagnostics";
 import {
-  Alert,
   ActivityIndicator,
   Animated,
   Easing,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -24,19 +24,26 @@ import {
 const API_URL = "https://api.riego.pipexapp.com/irrigation/pump";
 const API_BASE = API_URL.replace("/irrigation/pump", "");
 const TOKEN_STORAGE_KEY = "riego-iot.access-token";
+const DEVICE_CODE = "esp32-01";
 
 const COLORES = {
-  fondo: "#F1F5F2",
+  fondo: "#F3F7F5",
+  tarjeta: "#FFFFFF",
   tinta: "#12302F",
   tintaSuave: "#5C706E",
   agua: "#1FA7B5",
+  aguaClara: "#E3F4F6",
   reposo: "#9DB0AB",
+  reposoClaro: "#EEF3F1",
   tierra: "#8A6240",
-  tierraClara: "#E6D9CB",
+  tierraClara: "#EFE5DA",
   alerta: "#C2571A",
   alertaClara: "#FBEBDD",
+  aviso: "#B87A12",
+  avisoClara: "#FBF1DA",
   bien: "#2E9E4F",
-  linea: "#D5DFDB",
+  bienClara: "#E2F3E7",
+  linea: "#E0E8E4",
 };
 
 type EventoRiego = {
@@ -84,32 +91,73 @@ type AuthResponse = {
   user: Usuario;
 };
 
-const guardarToken = (token: string) =>
-  Platform.OS === "web"
-    ? Promise.resolve()
-    : SecureStore.setItemAsync(TOKEN_STORAGE_KEY, token);
+type TipoAviso = "ok" | "error" | "info";
+type Aviso = { tipo: TipoAviso; titulo: string; texto?: string };
 
-const borrarToken = () =>
-  Platform.OS === "web"
-    ? Promise.resolve()
-    : SecureStore.deleteItemAsync(TOKEN_STORAGE_KEY);
+// ---------------------------------------------------------------------------
+// Almacenamiento del token (en la web usamos localStorage para no perder la sesión)
+// ---------------------------------------------------------------------------
+const almacenWeb = (): any => {
+  try {
+    return (globalThis as any).localStorage ?? null;
+  } catch {
+    return null;
+  }
+};
 
-const obtenerToken = () =>
-  Platform.OS === "web"
-    ? Promise.resolve(null)
-    : SecureStore.getItemAsync(TOKEN_STORAGE_KEY);
+const guardarToken = async (token: string) => {
+  if (Platform.OS === "web") {
+    almacenWeb()?.setItem(TOKEN_STORAGE_KEY, token);
+    return;
+  }
+  await SecureStore.setItemAsync(TOKEN_STORAGE_KEY, token);
+};
+
+const borrarToken = async () => {
+  if (Platform.OS === "web") {
+    almacenWeb()?.removeItem(TOKEN_STORAGE_KEY);
+    return;
+  }
+  await SecureStore.deleteItemAsync(TOKEN_STORAGE_KEY);
+};
+
+const obtenerToken = async (): Promise<string | null> => {
+  if (Platform.OS === "web") {
+    return almacenWeb()?.getItem(TOKEN_STORAGE_KEY) ?? null;
+  }
+  return SecureStore.getItemAsync(TOKEN_STORAGE_KEY);
+};
 
 const mensajeDeError = (datos: { message?: string | string[] }, fallback: string) =>
   Array.isArray(datos.message) ? datos.message.join("\n") : datos.message ?? fallback;
 
+// ---------------------------------------------------------------------------
+// Fechas
+// ---------------------------------------------------------------------------
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * Convierte fechas como "2026-10-21 18:37:28.71557-04" (formato de Postgres)
+ * en milisegundos. Date.parse() directo devuelve NaN en celular (Hermes/Safari),
+ * y eso hacía que la app creyera que el ESP32 estaba desconectado.
+ */
+const parsearFecha = (valor?: string | null): number => {
+  if (!valor) return Number.NaN;
+  const normalizada = valor
+    .trim()
+    .replace(" ", "T")
+    .replace(/(\.\d{3})\d+/, "$1")
+    .replace(/([+-]\d{2})$/, "$1:00");
+  return Date.parse(normalizada);
+};
 
 // "2026-10-21 18:37:28.71557-04" -> "21 oct, 18:37"
 const formatearFecha = (fecha: string | null) => {
-  if (!fecha) return "Sin dato";
-  const [dia, hora] = fecha.slice(0, 16).split(" ");
-  const [, mes, d] = dia.split("-");
-  return `${parseInt(d, 10)} ${MESES[parseInt(mes, 10) - 1]}, ${hora}`;
+  const ms = parsearFecha(fecha);
+  if (!Number.isFinite(ms)) return "Sin dato";
+  const d = new Date(ms);
+  return `${d.getDate()} ${MESES[d.getMonth()]}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
 // 404 -> "6 min 44 s"
@@ -138,6 +186,36 @@ const haceCuanto = (ultima: number | null, ahora: number) => {
   return `Actualizado hace ${Math.floor(s / 60)} min`;
 };
 
+// ---------------------------------------------------------------------------
+// Estado de la bomba
+// ---------------------------------------------------------------------------
+/**
+ * El backend ya valida si el ESP32 está en línea (deviceStatus), así que aquí
+ * confiamos en ese dato y solo comprobamos que NUESTRA última consulta sea
+ * reciente (reloj del celular contra reloj del celular, sin desfases).
+ * La frescura del diagnóstico se mide contra el latido del propio servidor.
+ */
+function analizarEstado(e: EstadoBomba | null, datosFrescos: boolean) {
+  const conectado = datosFrescos && e?.deviceStatus === "ONLINE";
+  const latido = parsearFecha(e?.lastSeenAt);
+  const diagnostico = parsearFecha(e?.diagnosticsReceivedAt);
+  const diagnosticoVigente =
+    conectado &&
+    Number.isFinite(latido) &&
+    Number.isFinite(diagnostico) &&
+    Math.abs(latido - diagnostico) <= 30_000;
+  const bomba = e?.diagnostics?.components?.pump;
+  const encendida = conectado && e?.pumpState === "ON";
+  const bombeando =
+    encendida && diagnosticoVigente && bomba?.ok === true && bomba.status === "BOMBEANDO_OK";
+  const fallo = encendida && diagnosticoVigente && bomba?.ok === false;
+  const estadoConocido = conectado && (e?.pumpState === "ON" || e?.pumpState === "OFF");
+  return { conectado, encendida, bombeando, fallo, estadoConocido };
+}
+
+// ---------------------------------------------------------------------------
+// Componentes pequeños
+// ---------------------------------------------------------------------------
 function BarraHumedad({ etiqueta, valor }: { etiqueta: string; valor: number | null }) {
   const porcentaje = valor === null || valor === undefined ? 0 : Math.min(100, Math.max(0, valor));
   return (
@@ -155,15 +233,62 @@ function BarraHumedad({ etiqueta, valor }: { etiqueta: string; valor: number | n
   );
 }
 
-function Fila({ etiqueta, valor }: { etiqueta: string; valor: string }) {
+function Fila({ etiqueta, valor, ultima }: { etiqueta: string; valor: string; ultima?: boolean }) {
   return (
-    <View style={styles.fila}>
+    <View style={[styles.fila, ultima && styles.filaUltima]}>
       <Text style={styles.filaEtiqueta}>{etiqueta}</Text>
       <Text style={styles.filaValor}>{valor}</Text>
     </View>
   );
 }
 
+function Dato({
+  icono,
+  etiqueta,
+  valor,
+  color,
+}: {
+  icono: string;
+  etiqueta: string;
+  valor: string;
+  color: string;
+}) {
+  return (
+    <View style={styles.dato}>
+      <Text style={styles.datoIcono}>{icono}</Text>
+      <Text style={styles.datoEtiqueta}>{etiqueta}</Text>
+      <Text style={[styles.datoValor, { color }]} numberOfLines={2}>
+        {valor}
+      </Text>
+    </View>
+  );
+}
+
+function Notificacion({ aviso, onCerrar }: { aviso: Aviso; onCerrar: () => void }) {
+  const paleta = {
+    ok: { fondo: COLORES.bienClara, borde: COLORES.bien, texto: COLORES.bien, icono: "✓" },
+    error: { fondo: COLORES.alertaClara, borde: COLORES.alerta, texto: COLORES.alerta, icono: "!" },
+    info: { fondo: COLORES.avisoClara, borde: COLORES.aviso, texto: COLORES.aviso, icono: "i" },
+  }[aviso.tipo];
+  return (
+    <Pressable
+      onPress={onCerrar}
+      style={[styles.toast, { backgroundColor: paleta.fondo, borderColor: paleta.borde }]}
+    >
+      <View style={[styles.toastIcono, { backgroundColor: paleta.borde }]}>
+        <Text style={styles.toastIconoTexto}>{paleta.icono}</Text>
+      </View>
+      <View style={styles.toastTextos}>
+        <Text style={[styles.toastTitulo, { color: paleta.texto }]}>{aviso.titulo}</Text>
+        {aviso.texto ? <Text style={styles.toastTexto}>{aviso.texto}</Text> : null}
+      </View>
+    </Pressable>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pantalla principal
+// ---------------------------------------------------------------------------
 export default function Index() {
   const [estado, setEstado] = useState<EstadoBomba | null>(null);
   const [cargando, setCargando] = useState(true);
@@ -172,6 +297,7 @@ export default function Index() {
   const [error, setError] = useState("");
   const [ultima, setUltima] = useState<number | null>(null);
   const [ahora, setAhora] = useState(Date.now());
+  const [aviso, setAviso] = useState<Aviso | null>(null);
 
   const [token, setToken] = useState<string | null>(null);
   const [usuario, setUsuario] = useState<Usuario | null>(null);
@@ -181,36 +307,19 @@ export default function Index() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [nombre, setNombre] = useState("");
+  const [errorAuth, setErrorAuth] = useState("");
+  const [verPassword, setVerPassword] = useState(false);
   const [autenticando, setAutenticando] = useState(false);
   const [adminVisible, setAdminVisible] = useState(false);
 
   const pulso = useRef(new Animated.Value(0)).current;
   const controlEnCurso = useRef(false);
-  const heartbeatMs = estado?.lastSeenAt ? Date.parse(estado.lastSeenAt) : Number.NaN;
-  const equipoConectado =
-    estado?.deviceStatus === "ONLINE" &&
-    Number.isFinite(heartbeatMs) &&
-    ahora - heartbeatMs >= -30_000 &&
-    ahora - heartbeatMs <= 30_000;
-  const diagnosticoMs = estado?.diagnosticsReceivedAt
-    ? Date.parse(estado.diagnosticsReceivedAt)
-    : Number.NaN;
-  const diagnosticoReciente =
-    equipoConectado &&
-    Number.isFinite(diagnosticoMs) &&
-    ahora - diagnosticoMs >= -15_000 &&
-    ahora - diagnosticoMs <= 15_000;
-  const bombaReportada = estado?.diagnostics?.components?.pump;
-  const bombaFuncionando =
-    estado?.pumpState === "ON" &&
-    diagnosticoReciente &&
-    bombaReportada?.ok === true &&
-    bombaReportada.status === "BOMBEANDO_OK";
-  const falloBomba =
-    estado?.pumpState === "ON" &&
-    diagnosticoReciente &&
-    bombaReportada?.ok === false;
-  const encendida = equipoConectado && estado?.pumpState === "ON";
+  const avisoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const datosFrescos = ultima !== null && ahora - ultima <= 20_000;
+  const { conectado: equipoConectado, encendida, bombeando: bombaFuncionando, fallo: falloBomba, estadoConocido } =
+    analizarEstado(estado, datosFrescos);
+
   const puedeLeerBomba = usuario?.permissions.includes("pump:read") ?? false;
   const puedeControlarBomba = usuario?.permissions.includes("pump:control") ?? false;
   const puedeLeerHumedad = usuario?.permissions.includes("humidity:read") ?? false;
@@ -221,8 +330,32 @@ export default function Index() {
       ["users:read", "users:manage", "roles:read", "roles:manage"].some((p) =>
         usuario.permissions.includes(p),
       ));
-  const estadoConocido =
-    equipoConectado && (estado?.pumpState === "ON" || estado?.pumpState === "OFF");
+
+  const mostrarAviso = useCallback((tipo: TipoAviso, titulo: string, texto?: string) => {
+    if (avisoTimer.current) clearTimeout(avisoTimer.current);
+    setAviso({ tipo, titulo, texto });
+    avisoTimer.current = setTimeout(() => setAviso(null), 6000);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (avisoTimer.current) clearTimeout(avisoTimer.current);
+    },
+    [],
+  );
+
+  const abrirLogin = (modo: "login" | "registro") => {
+    setErrorAuth("");
+    setModoAutenticacion(modo);
+    setModalLoginVisible(true);
+  };
+
+  const cerrarSesionExpirada = async () => {
+    await borrarToken();
+    setToken(null);
+    setUsuario(null);
+    setEstado(null);
+  };
 
   const cargarEstado = useCallback(async () => {
     if (!sesionLista) return;
@@ -234,11 +367,10 @@ export default function Index() {
     }
 
     try {
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-      const respuesta = await fetch(API_URL, { method: "GET", headers });
+      const respuesta = await fetch(`${API_URL}?deviceCode=${DEVICE_CODE}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (!respuesta.ok) {
         if (respuesta.status === 401) {
           await borrarToken();
@@ -260,9 +392,13 @@ export default function Index() {
     }
   }, [puedeLeerBomba, sesionLista, token]);
 
-  const handleTogglePump = async (targetCommand: "ON" | "OFF") => {
+  const handleTogglePump = async (comando: "ON" | "OFF") => {
+    if (!token) {
+      abrirLogin("login");
+      return;
+    }
     if (!puedeControlarBomba) {
-      setModalLoginVisible(true);
+      mostrarAviso("error", "Sin permiso", "Tu cuenta no tiene permiso para controlar la bomba.");
       return;
     }
     if (controlEnCurso.current) return;
@@ -270,42 +406,36 @@ export default function Index() {
     controlEnCurso.current = true;
     setIsSubmitting(true);
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
       const respuesta = await fetch(API_URL, {
         method: "POST",
-        headers,
-        body: JSON.stringify({
-          command: targetCommand,
-          deviceCode: "esp32-01",
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ command: comando, deviceCode: DEVICE_CODE }),
       });
 
       if (!respuesta.ok) {
         if (respuesta.status === 401) {
-          await borrarToken();
-          setToken(null);
-          setUsuario(null);
-          setModoAutenticacion("login");
-          setModalLoginVisible(true);
+          await cerrarSesionExpirada();
+          abrirLogin("login");
           throw new Error("La sesión expiró. Inicia sesión nuevamente.");
         }
         if (respuesta.status === 403) {
           throw new Error("Tu cuenta no tiene permiso para controlar la bomba.");
         }
-        const detalle = (await respuesta.json()) as { message?: string | string[] };
-        throw new Error(
-          mensajeDeError(detalle, `Error HTTP ${respuesta.status}`),
-        );
+        const detalle = (await respuesta.json().catch(() => ({}))) as {
+          message?: string | string[];
+        };
+        throw new Error(mensajeDeError(detalle, `Error HTTP ${respuesta.status}`));
       }
 
+      // Esperamos hasta 10 s a que el ESP32 confirme el cambio
       let confirmado = false;
       let falloDetectado = false;
+      let releActivo = false;
+      let desconectado = false;
+
       for (let intento = 0; intento < 10; intento += 1) {
         await new Promise<void>((resolve) => setTimeout(resolve, 1000));
-        const estadoRespuesta = await fetch(API_URL, {
+        const estadoRespuesta = await fetch(`${API_URL}?deviceCode=${DEVICE_CODE}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!estadoRespuesta.ok) {
@@ -315,68 +445,63 @@ export default function Index() {
         const nuevoEstado: EstadoBomba = await estadoRespuesta.json();
         setEstado(nuevoEstado);
         setUltima(Date.now());
-        const heartbeat = nuevoEstado.lastSeenAt
-          ? Date.parse(nuevoEstado.lastSeenAt)
-          : Number.NaN;
-        const conectado =
-          nuevoEstado.deviceStatus === "ONLINE" &&
-          Number.isFinite(heartbeat) &&
-          Date.now() - heartbeat >= -30_000 &&
-          Date.now() - heartbeat <= 30_000;
 
-        if (!conectado) {
+        const a = analizarEstado(nuevoEstado, true);
+        if (!a.conectado) {
+          desconectado = true;
           break;
         }
-        if (nuevoEstado.pumpState === targetCommand) {
-          if (targetCommand === "OFF") {
-            confirmado = true;
-            break;
-          }
+        if (nuevoEstado.pumpState !== comando) continue;
 
-          const diagnosticoRecibido = nuevoEstado.diagnosticsReceivedAt
-            ? Date.parse(nuevoEstado.diagnosticsReceivedAt)
-            : Number.NaN;
-          const diagnosticoVigente =
-            Number.isFinite(diagnosticoRecibido) &&
-            Date.now() - diagnosticoRecibido >= -15_000 &&
-            Date.now() - diagnosticoRecibido <= 15_000;
-          const bomba = nuevoEstado.diagnostics?.components?.pump;
-          if (diagnosticoVigente && bomba?.ok === true && bomba.status === "BOMBEANDO_OK") {
-            confirmado = true;
-            break;
-          }
-          if (diagnosticoVigente && bomba?.ok === false) {
-            falloDetectado = true;
-            break;
-          }
+        if (comando === "OFF") {
+          confirmado = true;
+          break;
+        }
+        releActivo = true;
+        if (a.bombeando) {
+          confirmado = true;
+          break;
+        }
+        if (a.fallo) {
+          falloDetectado = true;
+          break;
         }
       }
 
-      if (!confirmado) {
-        Alert.alert(
-          falloDetectado ? "Fallo detectado en la bomba" : "Sin confirmación de la bomba",
-          falloDetectado
-            ? "El ESP32 activó el relé, pero su diagnóstico indica que la bomba no está funcionando. Revisa la bomba, los cables y la alimentación."
-            : targetCommand === "ON"
-              ? "El comando se envió, pero no se confirmó que la bomba esté bombeando. Verifica el ESP32 y espera una lectura de diagnóstico."
-              : "El comando se envió, pero el ESP32 no confirmó el cambio de estado.",
+      if (confirmado) {
+        mostrarAviso(
+          "ok",
+          comando === "ON" ? "Bomba funcionando" : "Bomba apagada",
+          comando === "ON"
+            ? "El ESP32 confirmó el relé y detectó corriente en la bomba."
+            : "El ESP32 confirmó que el relé se apagó.",
         );
-        return;
+      } else if (falloDetectado) {
+        mostrarAviso(
+          "error",
+          "Fallo detectado en la bomba",
+          "El relé se activó, pero el diagnóstico indica que la bomba no está funcionando. Revisa la bomba, los cables y la alimentación.",
+        );
+      } else if (releActivo) {
+        mostrarAviso(
+          "info",
+          "Relé activado",
+          "El ESP32 encendió el relé, pero aún no llegó el diagnóstico que confirma que la bomba bombea.",
+        );
+      } else if (desconectado) {
+        mostrarAviso("error", "ESP32 desconectado", "El comando se envió pero el equipo se desconectó.");
+      } else {
+        mostrarAviso(
+          "error",
+          "Sin confirmación",
+          comando === "ON"
+            ? "El comando se envió, pero el ESP32 no confirmó que la bomba esté encendida."
+            : "El comando se envió, pero el ESP32 no confirmó el cambio de estado.",
+        );
       }
-
-      Alert.alert(
-        targetCommand === "ON" ? "Bomba funcionando" : "Bomba apagada",
-        targetCommand === "ON"
-          ? "El ESP32 confirmó el relé y detectó corriente en la bomba."
-          : "El ESP32 confirmó que el relé se apagó.",
-      );
-    } catch (error: unknown) {
-      const detalle =
-        error instanceof Error ? error.message : "Error desconocido";
-      Alert.alert(
-        "Error",
-        `No se pudo comunicar con la bomba. (${detalle})`,
-      );
+    } catch (err: unknown) {
+      const detalle = err instanceof Error ? err.message : "Error desconocido";
+      mostrarAviso("error", "No se pudo controlar la bomba", detalle);
     } finally {
       controlEnCurso.current = false;
       setIsSubmitting(false);
@@ -386,8 +511,7 @@ export default function Index() {
   const handleAutenticacion = async () => {
     const email = loginEmail.trim().toLowerCase();
     if (!email || !loginPassword || (modoAutenticacion === "registro" && !nombre.trim())) {
-      Alert.alert(
-        "Campos requeridos",
+      setErrorAuth(
         modoAutenticacion === "registro"
           ? "Completa tu nombre, correo y contraseña."
           : "Ingresa tu correo y contraseña.",
@@ -395,6 +519,7 @@ export default function Index() {
       return;
     }
 
+    setErrorAuth("");
     setAutenticando(true);
     try {
       const endpoint = modoAutenticacion === "registro" ? "register" : "login";
@@ -407,7 +532,9 @@ export default function Index() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = (await res.json()) as AuthResponse & { message?: string | string[] };
+      const data = (await res.json().catch(() => ({}))) as AuthResponse & {
+        message?: string | string[];
+      };
       if (!res.ok) {
         throw new Error(
           mensajeDeError(
@@ -429,14 +556,16 @@ export default function Index() {
       setLoginPassword("");
       setNombre("");
       setError("");
-      Alert.alert(
+      setCargando(true);
+      mostrarAviso(
+        "ok",
         modoAutenticacion === "registro" ? "Cuenta creada" : "Sesión iniciada",
         `Bienvenido ${data.user.name ?? data.user.email} (${data.user.role})`,
       );
     } catch (err: unknown) {
-      const detalle =
-        err instanceof Error ? err.message : "No se pudo completar la autenticación.";
-      Alert.alert("Error de autenticación", detalle);
+      setErrorAuth(
+        err instanceof Error ? err.message : "No se pudo completar la autenticación.",
+      );
     } finally {
       setAutenticando(false);
     }
@@ -451,9 +580,11 @@ export default function Index() {
       setEstado(null);
       setError("");
     } catch (err: unknown) {
-      const detalle =
-        err instanceof Error ? err.message : "No se pudo cerrar la sesión de forma segura.";
-      Alert.alert("Error", detalle);
+      mostrarAviso(
+        "error",
+        "No se pudo cerrar la sesión",
+        err instanceof Error ? err.message : "Inténtalo de nuevo.",
+      );
     }
   };
 
@@ -517,7 +648,7 @@ export default function Index() {
     return () => clearInterval(reloj);
   }, []);
 
-  // Onda que late solo cuando la bomba está encendida
+  // Onda que late solo cuando la bomba está bombeando
   useEffect(() => {
     if (!bombaFuncionando) {
       pulso.setValue(0);
@@ -528,8 +659,8 @@ export default function Index() {
         toValue: 1,
         duration: 1800,
         easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      })
+        useNativeDriver: Platform.OS !== "web",
+      }),
     );
     animacion.start();
     return () => animacion.stop();
@@ -540,256 +671,66 @@ export default function Index() {
       <View style={styles.centro}>
         <StatusBar barStyle="dark-content" />
         <ActivityIndicator size="large" color={COLORES.agua} />
+        <Text style={styles.centroTexto}>Conectando con el sistema de riego…</Text>
       </View>
     );
   }
 
-  const colorEstado = bombaFuncionando
-    ? COLORES.agua
-    : falloBomba
-      ? COLORES.alerta
-      : COLORES.reposo;
-  const evento = estado?.lastEvent;
-
-  const escala = pulso.interpolate({ inputRange: [0, 1], outputRange: [1, 1.45] });
-  const opacidad = pulso.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] });
-
-  return (
-    <ScrollView
-      style={styles.pantalla}
-      contentContainerStyle={styles.contenido}
-      refreshControl={
-        <RefreshControl
-          refreshing={refrescando}
-          tintColor={COLORES.agua}
-          onRefresh={() => {
-            setRefrescando(true);
-            cargarEstado();
-          }}
-        />
-      }
-    >
-      <StatusBar barStyle="dark-content" />
-
-      {/* Encabezado */}
-      <View style={styles.cabeceraFila}>
-        <View>
-          <Text style={styles.titulo}>Riego</Text>
-          <View style={styles.conexion}>
-            <View
-              style={[
-                styles.punto,
-                { backgroundColor: error ? COLORES.alerta : COLORES.agua },
-              ]}
-            />
-            <Text style={styles.conexionTexto}>{haceCuanto(ultima, ahora)}</Text>
-          </View>
-        </View>
-
-        {/* Auth info / login button */}
-        {usuario ? (
-          <View style={styles.usuarioPill}>
-            <View style={styles.rolBadge}>
-              <Text style={styles.rolBadgeTexto}>{usuario.role}</Text>
-            </View>
-            <Text style={styles.usuarioEmail} numberOfLines={1}>
-              {usuario.email}
-            </Text>
-            <Pressable onPress={handleLogout} style={styles.logoutBtn}>
-              <Text style={styles.logoutBtnTexto}>Salir</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <Pressable
-            onPress={() => {
-              setModoAutenticacion("login");
-              setModalLoginVisible(true);
-            }}
-            style={styles.loginPill}
-          >
-            <Text style={styles.loginPillTexto}>🔑 Iniciar sesión</Text>
-          </Pressable>
-        )}
-      </View>
-
-      {/* Administración de usuarios y roles (solo con permisos) */}
-      {puedeAdministrar ? (
-        <Pressable onPress={() => setAdminVisible(true)} style={styles.adminBtn}>
-          <Text style={styles.adminBtnTexto}>⚙️ Administrar usuarios y roles</Text>
-        </Pressable>
-      ) : null}
-
-      {/* Aviso sin conexión */}
-      {error ? (
-        <View style={styles.aviso}>
-          <Text style={styles.avisoTitulo}>Sin conexión con el servidor</Text>
-          <Text style={styles.avisoTexto}>
-            {estado
-              ? "Se muestran los últimos datos recibidos. Se reintenta cada 5 segundos."
-              : "Revisa tu internet. Se reintenta cada 5 segundos."}
-          </Text>
-        </View>
-      ) : null}
-
-      {/* Protagonista: la bomba */}
-      <View style={styles.heroZona}>
-        {bombaFuncionando ? (
-          <Animated.View
-            style={[
-              styles.onda,
-              { backgroundColor: colorEstado, opacity: opacidad, transform: [{ scale: escala }] },
-            ]}
-          />
-        ) : null}
-        <View style={[styles.circulo, { borderColor: colorEstado }]}>
-          <Text style={styles.heroEtiqueta}>Bomba</Text>
-          <Text style={[styles.heroEstado, { color: colorEstado }]}>
-            {equipoConectado
-              ? estado?.pumpState === "ON"
-                ? falloBomba
-                  ? "Fallo detectado"
-                  : bombaFuncionando
-                    ? "Bombeando"
-                    : "Relé activado"
-                : estado?.pumpState === "OFF"
-                  ? "Apagada"
-                  : "Sin confirmación"
-              : "Sin conexión"}
-          </Text>
-        </View>
-        <Text
-          style={[
-            styles.estadoDispositivo,
-            { color: equipoConectado && !falloBomba ? COLORES.bien : COLORES.alerta },
-          ]}
-        >
-          {!equipoConectado
-            ? "ESP32 desconectado"
-            : falloBomba
-              ? "ESP32 conectado · bomba no detectada"
-              : bombaFuncionando
-                ? "ESP32 conectado · corriente detectada"
-                : encendida
-                  ? "ESP32 conectado · verificando bomba"
-                  : "ESP32 conectado"}
-        </Text>
-        {!token ? (
-          <Pressable
-            style={[styles.botonBomba, styles.botonEncender]}
-            onPress={() => {
-              setModoAutenticacion("login");
-              setModalLoginVisible(true);
-            }}
-          >
-            <Text style={styles.textoBotonBomba}>Inicia sesión para controlar</Text>
-          </Pressable>
-        ) : !puedeControlarBomba || !puedeLeerBomba ? (
-          <Text style={styles.permisoTexto}>
-            {puedeControlarBomba
-              ? "Tu cuenta no tiene permiso para consultar el estado de la bomba."
-              : "Tu cuenta puede consultar el estado, pero no controlar la bomba."}
-          </Text>
-        ) : !equipoConectado ? (
-          <View style={[styles.botonBomba, styles.botonDeshabilitado, styles.botonNoDisponible]}>
-            <Text style={styles.textoBotonBomba}>Bomba no disponible</Text>
-          </View>
-        ) : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ disabled: isSubmitting || !estadoConocido }}
-            disabled={isSubmitting || !estadoConocido}
-            onPress={() => handleTogglePump(encendida ? "OFF" : "ON")}
-            style={({ pressed }) => [
-              styles.botonBomba,
-              encendida ? styles.botonApagar : styles.botonEncender,
-              (pressed || isSubmitting) && styles.botonPresionado,
-              (isSubmitting || !estadoConocido) && styles.botonDeshabilitado,
-            ]}
-          >
-            {isSubmitting ? (
-              <View style={styles.esperandoConfirmacion}>
-                <ActivityIndicator color={COLORES.fondo} />
-                <Text style={styles.textoBotonBomba}>Esperando confirmación</Text>
-              </View>
-            ) : (
-              <Text style={styles.textoBotonBomba}>
-                {encendida ? "Apagar bomba" : "Encender bomba"}
-              </Text>
-            )}
-          </Pressable>
-        )}
-      </View>
-      <HumedadDashboard token={token} hasPermission={puedeLeerHumedad} />
-      <HardwareDiagnostics token={token} enabled={puedeLeerBomba} />
-      {/* Último riego */}
-      <View style={styles.seccion}>
-        <View style={styles.seccionCabecera}>
-          <Text style={styles.seccionTitulo}>Último riego</Text>
-          {evento ? (
-            <View style={styles.insignia}>
-              <Text style={styles.insigniaTexto}>{traducir(evento.mode)}</Text>
-            </View>
-          ) : null}
-        </View>
-
-        {evento ? (
-          <>
-            <Fila etiqueta="Estado" valor={traducir(evento.status)} />
-            <Fila etiqueta="Inicio" valor={formatearFecha(evento.activatedAt)} />
-            <Fila etiqueta="Fin" valor={formatearFecha(evento.stoppedAt)} />
-            <Fila etiqueta="Duración" valor={formatearDuracion(evento.durationSeconds)} />
-          </>
-        ) : (
-          <Text style={styles.vacio}>
-            Todavía no hay riegos registrados. Aparecerán aquí cuando la bomba se active.
-          </Text>
-        )}
-      </View>
-
-      {/* Humedad del suelo */}
-      {evento ? (
-        <View style={styles.seccion}>
-          <Text style={styles.seccionTitulo}>Humedad del suelo</Text>
-          <BarraHumedad etiqueta="Antes del riego" valor={evento.soilHumidityBefore} />
-          <BarraHumedad etiqueta="Después del riego" valor={evento.soilHumidityAfter} />
-        </View>
-      ) : null}
-
-      {/* Panel de administración */}
-      {usuario && token ? (
-        <AdminPanel
-          visible={adminVisible}
-          onClose={() => setAdminVisible(false)}
-          apiBase={API_BASE}
-          token={token}
-          usuario={usuario}
-        />
-      ) : null}
-
-      {/* Modal de Inicio de Sesión */}
-      <Modal
-        visible={modalLoginVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setModalLoginVisible(false)}
+  // ---- Sin sesión: solo se muestra la pantalla de inicio de sesión ----
+  if (!usuario) {
+    const esRegistro = modoAutenticacion === "registro";
+    return (
+      <KeyboardAvoidingView
+        style={styles.loginRaiz}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={styles.modalFondo}>
-          <ScrollView
-            style={styles.modalScroll}
-            contentContainerStyle={styles.modalScrollContent}
-            keyboardShouldPersistTaps="handled"
-          >
-            <View style={styles.modalContenedor}>
-              <Text style={styles.modalTitulo}>
-                {modoAutenticacion === "registro" ? "Crear cuenta" : "Iniciar sesión"}
-              </Text>
+        <StatusBar barStyle="light-content" />
+        <ScrollView
+          contentContainerStyle={styles.loginScroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.loginCabecera}>
+            <View style={styles.loginLogo}>
+              <Text style={styles.loginLogoIcono}>💧</Text>
+            </View>
+            <Text style={styles.loginMarca}>Riego</Text>
+            <Text style={styles.loginLema}>Control inteligente de tu sistema de riego</Text>
+          </View>
+
+          <View style={styles.loginFormZona}>
+            <View style={styles.loginFormTarjeta}>
+              <Text style={styles.modalTitulo}>{esRegistro ? "Crear cuenta" : "Bienvenido"}</Text>
               <Text style={styles.modalSubtitulo}>
-                {modoAutenticacion === "registro"
+                {esRegistro
                   ? "Tu cuenta nueva tendrá acceso de solo lectura."
-                  : "Accede para consultar el riego; las acciones dependen de tus permisos."}
+                  : "Inicia sesión para ver y controlar tu riego."}
               </Text>
 
-              {modoAutenticacion === "registro" ? (
+              <View style={styles.segmento}>
+                {(["login", "registro"] as const).map((modo) => (
+                  <Pressable
+                    key={modo}
+                    disabled={autenticando}
+                    onPress={() => {
+                      setErrorAuth("");
+                      setModoAutenticacion(modo);
+                    }}
+                    style={[styles.segmentoOpcion, modoAutenticacion === modo && styles.segmentoActivo]}
+                  >
+                    <Text
+                      style={[
+                        styles.segmentoTexto,
+                        modoAutenticacion === modo && styles.segmentoTextoActivo,
+                      ]}
+                    >
+                      {modo === "login" ? "Ingresar" : "Registrarme"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {esRegistro ? (
                 <>
                   <Text style={styles.inputLabel}>Nombre</Text>
                   <TextInput
@@ -818,307 +759,611 @@ export default function Index() {
               />
 
               <Text style={styles.inputLabel}>Contraseña</Text>
-              <TextInput
-                style={styles.input}
-                value={loginPassword}
-                onChangeText={setLoginPassword}
-                secureTextEntry
-                autoComplete={modoAutenticacion === "registro" ? "new-password" : "current-password"}
-                placeholder={
-                  modoAutenticacion === "registro" ? "Mínimo 6 caracteres" : "Tu contraseña"
-                }
-                placeholderTextColor={COLORES.reposo}
-                editable={!autenticando}
-              />
-
-              <View style={styles.modalBotones}>
-                <Pressable
-                  style={[styles.modalBoton, styles.botonCancelar]}
-                  onPress={() => setModalLoginVisible(false)}
-                  disabled={autenticando}
-                >
-                  <Text style={styles.botonCancelarTexto}>Cancelar</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.modalBoton, styles.botonEntrar]}
-                  onPress={handleAutenticacion}
-                  disabled={autenticando}
-                >
-                  {autenticando ? (
-                    <ActivityIndicator color={COLORES.fondo} size="small" />
-                  ) : (
-                    <Text style={styles.botonEntrarTexto}>
-                      {modoAutenticacion === "registro" ? "Crear cuenta" : "Ingresar"}
-                    </Text>
-                  )}
+              <View style={styles.passwordFila}>
+                <TextInput
+                  style={[styles.input, styles.passwordInput]}
+                  value={loginPassword}
+                  onChangeText={setLoginPassword}
+                  secureTextEntry={!verPassword}
+                  autoCapitalize="none"
+                  autoComplete={esRegistro ? "new-password" : "current-password"}
+                  placeholder={esRegistro ? "Mínimo 6 caracteres" : "Tu contraseña"}
+                  placeholderTextColor={COLORES.reposo}
+                  editable={!autenticando}
+                  onSubmitEditing={handleAutenticacion}
+                  returnKeyType="go"
+                />
+                <Pressable onPress={() => setVerPassword((v) => !v)} style={styles.passwordOjo}>
+                  <Text style={styles.passwordOjoTexto}>{verPassword ? "Ocultar" : "Mostrar"}</Text>
                 </Pressable>
               </View>
+
+              {errorAuth ? (
+                <View style={styles.errorAuthCaja}>
+                  <Text style={styles.errorAuthTexto}>{errorAuth}</Text>
+                </View>
+              ) : null}
+
               <Pressable
-                onPress={() =>
-                  setModoAutenticacion((modo) => (modo === "login" ? "registro" : "login"))
-                }
+                style={({ pressed }) => [
+                  styles.botonEntrar,
+                  (pressed || autenticando) && styles.presionado,
+                ]}
+                onPress={handleAutenticacion}
                 disabled={autenticando}
-                style={styles.cambiarModo}
               >
-                <Text style={styles.cambiarModoTexto}>
-                  {modoAutenticacion === "registro"
-                    ? "¿Ya tienes cuenta? Inicia sesión"
-                    : "¿No tienes cuenta? Regístrate"}
-                </Text>
+                {autenticando ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.botonEntrarTexto}>
+                    {esRegistro ? "Crear cuenta" : "Ingresar"}
+                  </Text>
+                )}
               </Pressable>
             </View>
-          </ScrollView>
+            <Text style={styles.loginPie}>Riego IoT · ESP32</Text>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ---- Valores derivados para la tarjeta de la bomba ----
+  const bombaEnReleSinVerificar = encendida && !bombaFuncionando && !falloBomba;
+  const colorEstado = bombaFuncionando
+    ? COLORES.agua
+    : falloBomba
+      ? COLORES.alerta
+      : bombaEnReleSinVerificar
+        ? COLORES.aviso
+        : COLORES.reposo;
+
+  const textoEstado = !token
+    ? "Sin sesión"
+    : !puedeLeerBomba
+      ? "Sin acceso"
+      : !equipoConectado
+        ? "Sin conexión"
+        : falloBomba
+          ? "Fallo detectado"
+          : bombaFuncionando
+            ? "Bombeando"
+            : estado?.pumpState === "ON"
+              ? "Relé activado"
+              : estado?.pumpState === "OFF"
+                ? "Apagada"
+                : "Sin confirmación";
+
+  const textoDispositivo = !equipoConectado
+    ? "ESP32 desconectado"
+    : falloBomba
+      ? "ESP32 conectado · bomba no detectada"
+      : bombaFuncionando
+        ? "ESP32 conectado · corriente detectada"
+        : encendida
+          ? "ESP32 conectado · verificando bomba"
+          : "ESP32 conectado";
+
+  const colorDispositivo = !equipoConectado || falloBomba ? COLORES.alerta : COLORES.bien;
+  const fondoDispositivo = !equipoConectado || falloBomba ? COLORES.alertaClara : COLORES.bienClara;
+
+  const evento = estado?.lastEvent;
+  const escala = pulso.interpolate({ inputRange: [0, 1], outputRange: [1, 1.5] });
+  const opacidad = pulso.interpolate({ inputRange: [0, 1], outputRange: [0.4, 0] });
+  const inicial = (usuario?.name ?? usuario?.email ?? "?").trim().charAt(0).toUpperCase();
+
+  return (
+    <View style={styles.raiz}>
+      <StatusBar barStyle="dark-content" />
+      <ScrollView
+        style={styles.pantalla}
+        contentContainerStyle={styles.contenido}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refrescando}
+            tintColor={COLORES.agua}
+            onRefresh={() => {
+              setRefrescando(true);
+              cargarEstado();
+            }}
+          />
+        }
+      >
+        <View style={styles.columna}>
+          {/* Encabezado */}
+          <View style={styles.cabeceraFila}>
+            <View style={styles.cabeceraTextos}>
+              <Text style={styles.titulo}>Riego</Text>
+              <Text style={styles.subtitulo}>Panel de control · {DEVICE_CODE}</Text>
+            </View>
+            <View style={styles.conexion}>
+              <View
+                style={[styles.punto, { backgroundColor: error ? COLORES.alerta : COLORES.agua }]}
+              />
+              <Text style={styles.conexionTexto}>{haceCuanto(ultima, ahora)}</Text>
+            </View>
+          </View>
+
+          {/* Sesión */}
+          {usuario ? (
+            <View style={styles.sesionTarjeta}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarTexto}>{inicial}</Text>
+              </View>
+              <View style={styles.sesionTextos}>
+                <Text style={styles.sesionNombre} numberOfLines={1}>
+                  {usuario.name ?? usuario.email}
+                </Text>
+                <View style={styles.sesionSub}>
+                  <View style={styles.rolBadge}>
+                    <Text style={styles.rolBadgeTexto}>{usuario.role}</Text>
+                  </View>
+                  <Text style={styles.sesionEmail} numberOfLines={1}>
+                    {usuario.email}
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                onPress={handleLogout}
+                style={({ pressed }) => [styles.salirBtn, pressed && styles.presionado]}
+              >
+                <Text style={styles.salirBtnTexto}>Salir</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          {/* Administración (solo con permisos) */}
+          {puedeAdministrar ? (
+            <Pressable
+              onPress={() => setAdminVisible(true)}
+              style={({ pressed }) => [styles.adminBtn, pressed && styles.presionado]}
+            >
+              <Text style={styles.adminBtnTexto}>⚙️  Administrar usuarios y roles</Text>
+            </Pressable>
+          ) : null}
+
+          {/* Aviso sin conexión */}
+          {error ? (
+            <View style={styles.aviso}>
+              <Text style={styles.avisoTitulo}>Sin conexión con el servidor</Text>
+              <Text style={styles.avisoTexto}>
+                {estado
+                  ? "Se muestran los últimos datos recibidos. Se reintenta cada 5 segundos."
+                  : error}
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Protagonista: la bomba */}
+          <View style={styles.heroTarjeta}>
+            <View style={styles.heroZona}>
+              {bombaFuncionando ? (
+                <Animated.View
+                  style={[
+                    styles.onda,
+                    {
+                      backgroundColor: colorEstado,
+                      opacity: opacidad,
+                      transform: [{ scale: escala }],
+                    },
+                  ]}
+                />
+              ) : null}
+              <View
+                style={[
+                  styles.circulo,
+                  { borderColor: colorEstado, backgroundColor: COLORES.reposoClaro },
+                ]}
+              >
+                <Text style={styles.heroIcono}>💧</Text>
+                <Text style={styles.heroEtiqueta}>Bomba</Text>
+                <Text style={[styles.heroEstado, { color: colorEstado }]} numberOfLines={2}>
+                  {textoEstado}
+                </Text>
+              </View>
+            </View>
+
+            {token && puedeLeerBomba ? (
+              <View style={[styles.chipDispositivo, { backgroundColor: fondoDispositivo }]}>
+                <View style={[styles.punto, { backgroundColor: colorDispositivo }]} />
+                <Text style={[styles.chipDispositivoTexto, { color: colorDispositivo }]}>
+                  {textoDispositivo}
+                </Text>
+              </View>
+            ) : null}
+
+            {token && puedeLeerBomba && !equipoConectado ? (
+              <Text style={styles.pista}>
+                Revisa que el ESP32 esté encendido y conectado a internet.
+              </Text>
+            ) : null}
+
+            {!token ? (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.botonBomba,
+                  styles.botonEncender,
+                  pressed && styles.presionado,
+                ]}
+                onPress={() => abrirLogin("login")}
+              >
+                <Text style={styles.textoBotonBomba}>Inicia sesión para controlar</Text>
+              </Pressable>
+            ) : !puedeControlarBomba || !puedeLeerBomba ? (
+              <Text style={styles.permisoTexto}>
+                {puedeControlarBomba
+                  ? "Tu cuenta no tiene permiso para consultar el estado de la bomba."
+                  : "Tu cuenta puede consultar el estado, pero no controlar la bomba."}
+              </Text>
+            ) : !equipoConectado ? (
+              <View style={[styles.botonBomba, styles.botonNoDisponible]}>
+                <Text style={styles.textoBotonBomba}>Bomba no disponible</Text>
+              </View>
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ disabled: isSubmitting || !estadoConocido }}
+                disabled={isSubmitting || !estadoConocido}
+                onPress={() => handleTogglePump(encendida ? "OFF" : "ON")}
+                style={({ pressed }) => [
+                  styles.botonBomba,
+                  encendida ? styles.botonApagar : styles.botonEncender,
+                  (pressed || isSubmitting) && styles.presionado,
+                  (isSubmitting || !estadoConocido) && styles.botonDeshabilitado,
+                ]}
+              >
+                {isSubmitting ? (
+                  <View style={styles.esperandoConfirmacion}>
+                    <ActivityIndicator color="#FFFFFF" />
+                    <Text style={styles.textoBotonBomba}>Esperando confirmación…</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.textoBotonBomba}>
+                    {encendida ? "Apagar bomba" : "Encender bomba"}
+                  </Text>
+                )}
+              </Pressable>
+            )}
+          </View>
+
+          {/* Resumen rápido */}
+          <View style={styles.datosFila}>
+            <Dato icono="💧" etiqueta="Bomba" valor={textoEstado} color={colorEstado} />
+            <Dato
+              icono="📡"
+              etiqueta="ESP32"
+              valor={equipoConectado ? "Conectado" : "Sin conexión"}
+              color={equipoConectado ? COLORES.bien : COLORES.alerta}
+            />
+          </View>
+
+          <View style={styles.tarjetaExterna}>
+            <HumedadDashboard token={token} hasPermission={puedeLeerHumedad} />
+          </View>
+          <HardwareDiagnostics token={token} enabled={puedeLeerBomba} />
+
+          {/* Último riego */}
+          <View style={styles.seccion}>
+            <View style={styles.seccionCabecera}>
+              <Text style={styles.seccionTitulo}>Último riego</Text>
+              {evento ? (
+                <View style={styles.insignia}>
+                  <Text style={styles.insigniaTexto}>{traducir(evento.mode)}</Text>
+                </View>
+              ) : null}
+            </View>
+
+            {evento ? (
+              <>
+                <Fila etiqueta="Estado" valor={traducir(evento.status)} />
+                <Fila etiqueta="Inicio" valor={formatearFecha(evento.activatedAt)} />
+                <Fila etiqueta="Fin" valor={formatearFecha(evento.stoppedAt)} />
+                <Fila etiqueta="Duración" valor={formatearDuracion(evento.durationSeconds)} ultima />
+                {evento.soilHumidityBefore !== null || evento.soilHumidityAfter !== null ? (
+                  <>
+                    <Text style={styles.subseccion}>Humedad del suelo en ese riego</Text>
+                    <BarraHumedad etiqueta="Antes" valor={evento.soilHumidityBefore} />
+                    <BarraHumedad etiqueta="Después" valor={evento.soilHumidityAfter} />
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <Text style={styles.vacio}>
+                Todavía no hay riegos registrados. Aparecerán aquí cuando la bomba se active.
+              </Text>
+            )}
+          </View>
         </View>
-      </Modal>
-    </ScrollView>
+      </ScrollView>
+
+      {/* Notificación flotante (reemplaza a Alert, que no funciona en la web) */}
+      {aviso ? (
+        <View style={styles.toastZona} pointerEvents="box-none">
+          <Notificacion aviso={aviso} onCerrar={() => setAviso(null)} />
+        </View>
+      ) : null}
+
+      {/* Panel de administración */}
+      {usuario && token ? (
+        <AdminPanel
+          visible={adminVisible}
+          onClose={() => setAdminVisible(false)}
+          apiBase={API_BASE}
+          token={token}
+          usuario={usuario}
+        />
+      ) : null}
+
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  pantalla: { flex: 1, backgroundColor: COLORES.fondo },
-  contenido: { paddingTop: 64, paddingHorizontal: 24, paddingBottom: 48 },
-  centro: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: COLORES.fondo },
+const sombraSuave = {
+  shadowColor: "#12302F",
+  shadowOpacity: 0.07,
+  shadowRadius: 14,
+  shadowOffset: { width: 0, height: 4 },
+  elevation: 2,
+} as const;
 
+const styles = StyleSheet.create({
+  raiz: { flex: 1, backgroundColor: COLORES.fondo },
+  pantalla: { flex: 1, backgroundColor: COLORES.fondo },
+  contenido: {
+    paddingTop: Platform.OS === "web" ? 112 : 60, // en web, deja espacio para la barra "Expo Starter"
+    paddingHorizontal: 20,
+    paddingBottom: 56,
+    alignItems: "center",
+  },
+  columna: { width: "100%", maxWidth: 560 },
+  centro: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORES.fondo,
+    gap: 14,
+  },
+  centroTexto: { fontSize: 14, color: COLORES.tintaSuave },
+  presionado: { opacity: 0.8 },
+
+  // Encabezado
   cabeceraFila: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "flex-end",
     justifyContent: "space-between",
+    marginBottom: 18,
   },
-  titulo: { fontSize: 38, fontWeight: "800", color: COLORES.tinta, letterSpacing: -1 },
-  conexion: { flexDirection: "row", alignItems: "center", marginTop: 6 },
-  punto: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
-  conexionTexto: { fontSize: 14, color: COLORES.tintaSuave },
-
-  usuarioPill: {
+  cabeceraTextos: { flexShrink: 1 },
+  titulo: { fontSize: 36, fontWeight: "800", color: COLORES.tinta, letterSpacing: -1 },
+  subtitulo: { fontSize: 14, color: COLORES.tintaSuave, marginTop: 2 },
+  conexion: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#E2ECE9",
+    backgroundColor: COLORES.tarjeta,
     paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 20,
-    maxWidth: 200,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORES.linea,
   },
-  rolBadge: {
-    backgroundColor: COLORES.tinta,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-    marginRight: 6,
-  },
-  rolBadgeTexto: {
-    color: COLORES.fondo,
-    fontSize: 10,
-    fontWeight: "800",
-  },
-  usuarioEmail: {
-    fontSize: 12,
-    color: COLORES.tinta,
-    fontWeight: "600",
-    maxWidth: 90,
-  },
-  logoutBtn: {
-    marginLeft: 6,
-    paddingVertical: 2,
-    paddingHorizontal: 6,
-    backgroundColor: COLORES.alertaClara,
-    borderRadius: 8,
-  },
-  logoutBtnTexto: {
-    fontSize: 11,
-    color: COLORES.alerta,
-    fontWeight: "700",
-  },
-  adminBtn: {
-    marginTop: 16,
-    backgroundColor: COLORES.tinta,
-    paddingVertical: 12,
-    borderRadius: 14,
+  punto: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
+  conexionTexto: { fontSize: 12, color: COLORES.tintaSuave, fontWeight: "600" },
+
+  // Sesión
+  sesionTarjeta: {
+    flexDirection: "row",
     alignItems: "center",
+    backgroundColor: COLORES.tarjeta,
+    borderRadius: 18,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORES.linea,
+    ...sombraSuave,
   },
-  adminBtnTexto: {
-    color: COLORES.fondo,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  loginPill: {
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: COLORES.tinta,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  avatarTexto: { color: "#FFFFFF", fontSize: 18, fontWeight: "800" },
+  sesionTextos: { flex: 1, marginRight: 8 },
+  sesionNombre: { fontSize: 15, fontWeight: "700", color: COLORES.tinta },
+  sesionSub: { flexDirection: "row", alignItems: "center", marginTop: 3, gap: 6 },
+  sesionEmail: { fontSize: 12, color: COLORES.tintaSuave, flexShrink: 1 },
+  rolBadge: {
+    backgroundColor: COLORES.aguaClara,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  rolBadgeTexto: { color: COLORES.agua, fontSize: 10, fontWeight: "800" },
+  salirBtn: {
     paddingVertical: 8,
     paddingHorizontal: 14,
+    backgroundColor: COLORES.alertaClara,
+    borderRadius: 12,
+  },
+  salirBtnTexto: { fontSize: 13, color: COLORES.alerta, fontWeight: "700" },
+
+  loginTarjeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORES.tarjeta,
     borderRadius: 18,
-    alignSelf: "flex-start",
+    padding: 14,
+    borderWidth: 1,
+    borderColor: COLORES.linea,
+    ...sombraSuave,
   },
-  loginPillTexto: {
-    color: COLORES.fondo,
-    fontSize: 12,
-    fontWeight: "700",
+  loginIcono: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: COLORES.aguaClara,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
   },
+  loginIconoTexto: { fontSize: 20 },
+  flecha: { fontSize: 28, color: COLORES.reposo, marginTop: -4 },
+
+  adminBtn: {
+    marginTop: 12,
+    backgroundColor: COLORES.tinta,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: "center",
+  },
+  adminBtnTexto: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
+
+  aviso: {
+    marginTop: 16,
+    backgroundColor: COLORES.alertaClara,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORES.alerta,
+    padding: 14,
+    borderRadius: 12,
+  },
+  avisoTitulo: { fontSize: 15, fontWeight: "700", color: COLORES.alerta, marginBottom: 2 },
+  avisoTexto: { fontSize: 14, color: COLORES.tinta, lineHeight: 20 },
+
+  // Tarjeta de la bomba
+  heroTarjeta: {
+    marginTop: 18,
+    backgroundColor: COLORES.tarjeta,
+    borderRadius: 28,
+    paddingTop: 28,
+    paddingBottom: 24,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: COLORES.linea,
+    ...sombraSuave,
+  },
+  heroZona: { alignItems: "center", justifyContent: "center", height: 240, width: "100%" },
+  onda: { position: "absolute", width: 190, height: 190, borderRadius: 95 },
+  circulo: {
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    borderWidth: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroIcono: { fontSize: 28, marginBottom: 2 },
+  heroEtiqueta: { fontSize: 13, color: COLORES.tintaSuave, marginBottom: 2 },
+  heroEstado: {
+    fontSize: 20,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+    textAlign: "center",
+    paddingHorizontal: 18,
+  },
+  chipDispositivo: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    marginTop: 4,
+  },
+  chipDispositivoTexto: { fontSize: 13, fontWeight: "700" },
+  botonBomba: {
+    width: "100%",
+    minHeight: 54,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+    paddingHorizontal: 24,
+    borderRadius: 18,
+  },
+  botonEncender: { backgroundColor: COLORES.agua },
+  botonApagar: { backgroundColor: COLORES.alerta },
+  botonNoDisponible: { backgroundColor: COLORES.reposo },
+  botonDeshabilitado: { opacity: 0.55 },
+  textoBotonBomba: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
+  esperandoConfirmacion: { flexDirection: "row", alignItems: "center", gap: 10 },
   permisoTexto: {
     marginTop: 18,
     color: COLORES.tintaSuave,
     fontSize: 14,
     textAlign: "center",
-  },
-  estadoDispositivo: {
-    marginTop: -18,
-    marginBottom: 4,
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  botonNoDisponible: {
-    backgroundColor: COLORES.reposo,
-  },
-  esperandoConfirmacion: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
+    lineHeight: 20,
   },
 
-  modalFondo: {
+
+  // Resumen rápido
+  datosFila: { flexDirection: "row", gap: 10, marginTop: 14 },
+  dato: {
     flex: 1,
-    backgroundColor: "rgba(18, 48, 47, 0.6)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  modalScroll: {
-    flex: 1,
-    width: "100%",
-  },
-  modalScrollContent: {
-    flexGrow: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 24,
-  },
-  modalContenedor: {
-    width: "100%",
-    maxWidth: 380,
-    backgroundColor: COLORES.fondo,
-    borderRadius: 20,
-    padding: 24,
-    shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-  modalTitulo: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: COLORES.tinta,
-    marginBottom: 4,
-  },
-  modalSubtitulo: {
-    fontSize: 14,
-    color: COLORES.tintaSuave,
-    marginBottom: 20,
-  },
-  inputLabel: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: COLORES.tinta,
-    marginBottom: 6,
-    marginTop: 10,
-  },
-  input: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORES.tarjeta,
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: COLORES.linea,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: COLORES.tinta,
+    ...sombraSuave,
   },
-  modalBotones: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: 12,
-    marginTop: 24,
+  datoIcono: { fontSize: 18, marginBottom: 6 },
+  datoEtiqueta: { fontSize: 12, color: COLORES.tintaSuave, fontWeight: "600" },
+  datoValor: { fontSize: 14, fontWeight: "800", marginTop: 2 },
+  pista: {
+    fontSize: 13,
+    color: COLORES.tintaSuave,
+    textAlign: "center",
+    lineHeight: 18,
+    marginTop: 10,
+    paddingHorizontal: 12,
   },
-  modalBoton: {
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: 10,
-    minWidth: 90,
-    alignItems: "center",
-  },
-  botonCancelar: {
-    backgroundColor: COLORES.linea,
-  },
-  botonCancelarTexto: {
-    color: COLORES.tinta,
-    fontWeight: "700",
-    fontSize: 14,
-  },
-  botonEntrar: {
-    backgroundColor: COLORES.agua,
-  },
-  botonEntrarTexto: {
-    color: COLORES.fondo,
-    fontWeight: "700",
-    fontSize: 14,
-  },
-  cambiarModo: {
-    alignSelf: "center",
-    paddingTop: 18,
-    paddingBottom: 4,
-  },
-  cambiarModoTexto: {
-    color: COLORES.agua,
-    fontWeight: "700",
-    fontSize: 14,
-  },
-
-  aviso: {
+  tarjetaExterna: {
     marginTop: 20,
-    backgroundColor: COLORES.alertaClara,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORES.alerta,
-    padding: 14,
-    borderRadius: 6,
+    backgroundColor: COLORES.tarjeta,
+    borderRadius: 22,
+    paddingHorizontal: 18,
+    paddingBottom: 18,
+    borderWidth: 1,
+    borderColor: COLORES.linea,
+    ...sombraSuave,
   },
-  avisoTitulo: { fontSize: 15, fontWeight: "700", color: COLORES.alerta, marginBottom: 2 },
-  avisoTexto: { fontSize: 14, color: COLORES.tinta, lineHeight: 20 },
-
-  heroZona: { alignItems: "center", justifyContent: "center", height: 360, marginVertical: 8 },
-  onda: { position: "absolute", width: 210, height: 210, borderRadius: 105 },
-  circulo: {
-    width: 210,
-    height: 210,
-    borderRadius: 105,
-    borderWidth: 6,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: COLORES.fondo,
-  },
-  heroEtiqueta: { fontSize: 15, color: COLORES.tintaSuave, marginBottom: 4 },
-  heroEstado: { fontSize: 32, fontWeight: "800", letterSpacing: -0.5 },
-  botonBomba: {
-    minWidth: 180,
-    minHeight: 48,
-    alignItems: "center",
-    justifyContent: "center",
+  subseccion: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: COLORES.tintaSuave,
     marginTop: 18,
-    paddingHorizontal: 24,
-    borderRadius: 24,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
-  botonEncender: { backgroundColor: COLORES.agua },
-  botonApagar: { backgroundColor: COLORES.alerta },
-  botonPresionado: { opacity: 0.82 },
-  botonDeshabilitado: { opacity: 0.55 },
-  textoBotonBomba: { color: COLORES.fondo, fontSize: 16, fontWeight: "700" },
 
-  seccion: { marginTop: 24 },
-  seccionCabecera: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  seccionTitulo: { fontSize: 20, fontWeight: "700", color: COLORES.tinta, marginBottom: 6 },
+  // Secciones
+  seccion: {
+    marginTop: 24,
+    backgroundColor: COLORES.tarjeta,
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORES.linea,
+    ...sombraSuave,
+  },
+  seccionCabecera: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  seccionTitulo: { fontSize: 18, fontWeight: "700", color: COLORES.tinta, marginBottom: 4 },
   insignia: {
-    backgroundColor: COLORES.tinta,
+    backgroundColor: COLORES.aguaClara,
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 12,
-    marginBottom: 6,
+    marginBottom: 4,
   },
-  insigniaTexto: { color: COLORES.fondo, fontSize: 13, fontWeight: "600" },
+  insigniaTexto: { color: COLORES.agua, fontSize: 12, fontWeight: "700" },
 
   fila: {
     flexDirection: "row",
@@ -1127,16 +1372,171 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORES.linea,
   },
-  filaEtiqueta: { fontSize: 16, color: COLORES.tintaSuave },
-  filaValor: { fontSize: 16, fontWeight: "600", color: COLORES.tinta },
+  filaUltima: { borderBottomWidth: 0 },
+  filaEtiqueta: { fontSize: 15, color: COLORES.tintaSuave },
+  filaValor: { fontSize: 15, fontWeight: "600", color: COLORES.tinta },
 
   barraFila: { marginTop: 14 },
   barraTextos: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  barraEtiqueta: { fontSize: 15, color: COLORES.tintaSuave },
-  barraValor: { fontSize: 15, fontWeight: "700", color: COLORES.tinta },
+  barraEtiqueta: { fontSize: 14, color: COLORES.tintaSuave },
+  barraValor: { fontSize: 14, fontWeight: "700", color: COLORES.tinta },
   barraFondo: { height: 10, borderRadius: 5, backgroundColor: COLORES.tierraClara, overflow: "hidden" },
   barraRelleno: { height: 10, borderRadius: 5, backgroundColor: COLORES.tierra },
 
-  vacio: { fontSize: 15, color: COLORES.tintaSuave, lineHeight: 22, marginTop: 6 },
-  nota: { textAlign: "center", color: COLORES.tintaSuave, fontSize: 13, marginTop: 32 },
+  vacio: { fontSize: 14, color: COLORES.tintaSuave, lineHeight: 22, marginTop: 6 },
+
+  // Notificación flotante
+  toastZona: {
+    position: "absolute",
+    top: Platform.OS === "web" ? 108 : 52,
+    left: 16,
+    right: 16,
+    alignItems: "center",
+    zIndex: 50,
+  },
+  toast: {
+    width: "100%",
+    maxWidth: 520,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  toastIcono: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+    marginTop: 1,
+  },
+  toastIconoTexto: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
+  toastTextos: { flex: 1 },
+  toastTitulo: { fontSize: 15, fontWeight: "800" },
+  toastTexto: { fontSize: 13, color: COLORES.tinta, marginTop: 2, lineHeight: 18 },
+
+
+  // Pantalla de inicio de sesión
+  loginRaiz: { flex: 1, backgroundColor: COLORES.fondo },
+  loginScroll: { flexGrow: 1, alignItems: "center", paddingBottom: 40 },
+  loginCabecera: {
+    width: "100%",
+    backgroundColor: COLORES.tinta,
+    alignItems: "center",
+    paddingTop: Platform.OS === "web" ? 128 : 96,
+    paddingBottom: 96,
+    paddingHorizontal: 24,
+    borderBottomLeftRadius: 40,
+    borderBottomRightRadius: 40,
+  },
+  loginLogo: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: COLORES.agua,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  loginLogoIcono: { fontSize: 38 },
+  loginMarca: { fontSize: 40, fontWeight: "800", color: "#FFFFFF", letterSpacing: -1 },
+  loginLema: { fontSize: 15, color: "#B9D3CF", marginTop: 6, textAlign: "center" },
+  loginFormZona: { width: "100%", maxWidth: 440, paddingHorizontal: 20, marginTop: -56 },
+  loginFormTarjeta: {
+    backgroundColor: COLORES.tarjeta,
+    borderRadius: 26,
+    padding: 24,
+    shadowColor: "#12302F",
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  loginPie: { textAlign: "center", color: COLORES.reposo, fontSize: 12, marginTop: 22 },
+  passwordFila: { flexDirection: "row", alignItems: "center" },
+  passwordInput: { flex: 1, paddingRight: 84 },
+  passwordOjo: { position: "absolute", right: 6, paddingVertical: 8, paddingHorizontal: 10 },
+  passwordOjoTexto: { color: COLORES.agua, fontWeight: "700", fontSize: 13 },
+
+  // Modal de acceso (estilos reutilizados por el formulario)
+  modalFondo: {
+    flex: 1,
+    backgroundColor: "rgba(18, 48, 47, 0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalScroll: { flex: 1, width: "100%" },
+  modalScrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalContenedor: {
+    width: "100%",
+    maxWidth: 400,
+    backgroundColor: COLORES.tarjeta,
+    borderRadius: 26,
+    padding: 24,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  modalTitulo: { fontSize: 24, fontWeight: "800", color: COLORES.tinta, marginBottom: 4 },
+  modalSubtitulo: { fontSize: 14, color: COLORES.tintaSuave, marginBottom: 18, lineHeight: 20 },
+  segmento: {
+    flexDirection: "row",
+    backgroundColor: COLORES.reposoClaro,
+    borderRadius: 14,
+    padding: 4,
+    marginBottom: 6,
+  },
+  segmentoOpcion: { flex: 1, paddingVertical: 10, borderRadius: 11, alignItems: "center" },
+  segmentoActivo: { backgroundColor: COLORES.tarjeta, ...sombraSuave },
+  segmentoTexto: { fontSize: 14, fontWeight: "700", color: COLORES.tintaSuave },
+  segmentoTextoActivo: { color: COLORES.tinta },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: COLORES.tinta,
+    marginBottom: 6,
+    marginTop: 14,
+  },
+  input: {
+    backgroundColor: COLORES.fondo,
+    borderWidth: 1,
+    borderColor: COLORES.linea,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: COLORES.tinta,
+  },
+  errorAuthCaja: {
+    backgroundColor: COLORES.alertaClara,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 16,
+  },
+  errorAuthTexto: { color: COLORES.alerta, fontSize: 13, fontWeight: "600", lineHeight: 18 },
+  botonEntrar: {
+    backgroundColor: COLORES.agua,
+    minHeight: 50,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 22,
+  },
+  botonEntrarTexto: { color: "#FFFFFF", fontWeight: "800", fontSize: 16 },
+  cancelarLink: { alignSelf: "center", paddingTop: 16, paddingBottom: 2 },
+  cancelarLinkTexto: { color: COLORES.tintaSuave, fontWeight: "700", fontSize: 14 },
 });

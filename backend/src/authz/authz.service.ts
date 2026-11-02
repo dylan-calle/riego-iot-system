@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -11,6 +12,7 @@ import type { AssignRoleDto } from './dto/assign-role.dto.js';
 import type { CreateRoleDto } from './dto/create-role.dto.js';
 import type { CreateUserDto } from './dto/create-user.dto.js';
 import type { UpdateRoleDto } from './dto/update-role.dto.js';
+import type { UpdateUserDto } from './dto/update-user.dto.js';
 
 @Injectable()
 export class AuthzService {
@@ -401,6 +403,103 @@ export class AuthzService {
         email: user.email,
         customPermissions: assigned,
       },
+    };
+  }
+
+  /**
+   * Update basic user data (name, email, password)
+   */
+  async updateUser(userId: number, dto: UpdateUserDto) {
+    const orm = this.prisma.client.orm.public;
+    const user = await orm.User.where({ id: userId }).first();
+
+    if (!user) {
+      throw new NotFoundException(`User with id ${userId} not found`);
+    }
+
+    const data: { email?: string; name?: string | null; password?: string } = {};
+
+    if (dto.email !== undefined && dto.email !== user.email) {
+      const duplicated = await orm.User.where({ email: dto.email }).first();
+      if (duplicated) {
+        throw new ConflictException(
+          `User with email ${dto.email} already exists`,
+        );
+      }
+      data.email = dto.email;
+    }
+    if (dto.name !== undefined) {
+      data.name = dto.name.trim() === '' ? null : dto.name.trim();
+    }
+    if (dto.password) {
+      data.password = await bcrypt.hash(dto.password, 10);
+    }
+
+    if (Object.keys(data).length > 0) {
+      await orm.User.where({ id: userId }).update(data);
+    }
+
+    return {
+      success: true,
+      message: `User ${user.email} updated successfully`,
+      data: {
+        id: user.id,
+        email: data.email ?? user.email,
+        name: data.name !== undefined ? data.name : user.name,
+      },
+    };
+  }
+
+  /**
+   * Delete a user (cannot delete yourself, nor the last ADMIN)
+   */
+  async deleteUser(
+    userId: number,
+    requester: { id: number; role: string },
+  ) {
+    const orm = this.prisma.client.orm.public;
+    const user = await orm.User.where({ id: userId }).first();
+
+    if (!user) {
+      throw new NotFoundException(`User with id ${userId} not found`);
+    }
+    if (user.id === requester.id) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+
+    const role = user.roleId
+      ? await orm.Role.where({ id: user.roleId }).first()
+      : null;
+
+    if (role?.name === 'ADMIN') {
+      if (requester.role !== 'ADMIN') {
+        throw new ForbiddenException('Only an ADMIN can delete another ADMIN');
+      }
+      const admins = await orm.User.where({ roleId: role.id }).all();
+      if (admins.length <= 1) {
+        throw new BadRequestException('Cannot delete the last ADMIN user');
+      }
+    }
+
+    // Release everything that points to this user before deleting it
+    const directPermissions = await orm.UserPermission.where({ userId }).all();
+    for (const up of directPermissions) {
+      await orm.UserPermission.where({ id: up.id }).delete();
+    }
+    const devices = await orm.Device.where({ userId }).all();
+    for (const device of devices) {
+      await orm.Device.where({ id: device.id }).update({ userId: null });
+    }
+    const events = await orm.IrrigationEvent.where({ userId }).all();
+    for (const event of events) {
+      await orm.IrrigationEvent.where({ id: event.id }).update({ userId: null });
+    }
+
+    await orm.User.where({ id: userId }).delete();
+
+    return {
+      success: true,
+      message: `User '${user.email}' deleted successfully`,
     };
   }
 }
