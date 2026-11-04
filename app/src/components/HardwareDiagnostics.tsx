@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Platform, ActivityIndicator } from 'react-native';
 import { useDiagnostics } from '@/hooks/use-diagnostics';
 import { DiagnosticsFull } from '@/types/diagnostics';
+import { CircuitSchematic } from '@/components/diagnostics/circuit-schematic';
 
 const COLORES = {
   ok: '#2E9E4F',       // Verde
@@ -92,9 +93,16 @@ export default function HardwareDiagnostics({ token, enabled }: HardwareDiagnost
 
   if (!diagnostics || diagnostics.generalStatus === 'OFFLINE') {
     return (
-      <View style={[styles.container, { backgroundColor: COLORES.alerta }]}>
-        <Text style={styles.tituloHeader}>ESP32 FUERA DE LÍNEA</Text>
-        <Text style={{ color: '#fff' }}>El equipo no está reportando telemetría.</Text>
+      <View>
+        {diagnostics ? (
+          <View style={styles.esquema}>
+            <CircuitSchematic diagnostics={diagnostics} isStale={isStale} />
+          </View>
+        ) : null}
+        <View style={[styles.container, { backgroundColor: COLORES.alerta }]}>
+          <Text style={styles.tituloHeader}>ESP32 FUERA DE LÍNEA</Text>
+          <Text style={{ color: '#fff' }}>El equipo no está reportando telemetría.</Text>
+        </View>
       </View>
     );
   }
@@ -126,90 +134,99 @@ export default function HardwareDiagnostics({ token, enabled }: HardwareDiagnost
   };
 
   return (
-    <View style={styles.container}>
-      {/* 1. Header de Estado General */}
-      <View style={[styles.header, { backgroundColor: isFallo ? COLORES.alerta : COLORES.ok }]}>
-        <Text style={styles.tituloHeader}>
-          {isFallo ? '¡FALLA DE HARDWARE DETECTADA!' : 'SISTEMA DE HARDWARE OK'}
-        </Text>
-        <View style={styles.badgesRow}>
-          <View style={styles.badge}><Text style={styles.badgeText}>Modo: {diag.mode}</Text></View>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>Umbral: {diag.thresholdMin}% - {diag.thresholdMax}%</Text>
+    <>
+      <View style={styles.esquema}>
+        <CircuitSchematic diagnostics={diag} isStale={isStale} />
+      </View>
+
+      <View style={styles.container}>
+        {/* 1. Header de Estado General */}
+        <View style={[styles.header, { backgroundColor: isFallo ? COLORES.alerta : COLORES.ok }]}>
+          <Text style={styles.tituloHeader}>
+            {isFallo ? '¡FALLA DE HARDWARE DETECTADA!' : 'SISTEMA DE HARDWARE OK'}
+          </Text>
+          <View style={styles.badgesRow}>
+            <View style={styles.badge}><Text style={styles.badgeText}>Modo: {diag.mode}</Text></View>
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>Umbral: {diag.thresholdMin}% - {diag.thresholdMax}%</Text>
+            </View>
+            {isStale && <View style={[styles.badge, { backgroundColor: '#F59E0B' }]}><Text style={styles.badgeText}>Datos Atrasados</Text></View>}
           </View>
-          {isStale && <View style={[styles.badge, { backgroundColor: '#F59E0B' }]}><Text style={styles.badgeText}>Datos Atrasados</Text></View>}
+        </View>
+
+        {/* 2. Grid de Componentes */}
+        <View style={styles.grid}>
+          {renderCard(
+            'ESP32 / Wi-Fi',
+            diag.components.esp32.ok,
+            false,
+            diag.components.esp32.status,
+            `Red: ${diag.components.esp32.wifi}`,
+            `Señal: ${diag.components.esp32.rssi} dBm`
+          )}
+          {renderCard(
+            'Sensor Humedad',
+            diag.components.sensor.ok,
+            false,
+            diag.components.sensor.status,
+            `Humedad: ${diag.components.sensor.moisture}%`,
+            `ADC: ${diag.components.sensor.adc}`
+          )}
+          {renderCard(
+            'Módulo Relé',
+            diag.components.relay.ok,
+            diag.components.relay.active,
+            diag.components.relay.status,
+            diag.components.relay.active ? 'Contacto cerrado: pasa energía a la bomba' : 'Contacto abierto: sin energía a la bomba'
+          )}
+          {renderCard(
+            'Pilas / Batería',
+            diag.components.battery.ok,
+            false,
+            diag.components.battery.status,
+            `Carga: ${diag.components.battery.level}%`,
+            `ADC Divisor: ${diag.components.battery.adc}`
+          )}
+          {renderCard(
+            'Bomba de Agua',
+            diag.components.pump.ok,
+            diag.components.pump.running,
+            diag.components.pump.status,
+            diag.components.pump.running ? 'Motor en marcha' : 'Motor detenido'
+          )}
+          {renderCard(
+            'Protoboard',
+            diag.components.wiring.ok,
+            false,
+            diag.components.wiring.status,
+            diag.components.wiring.ok ? 'Todas las conexiones OK' : 'Revise cables puente'
+          )}
+        </View>
+
+        {/* 3. Consola de Eventos (Logs) */}
+        <View style={styles.terminalContainer}>
+          <View style={styles.terminalHeader}>
+            <Text style={styles.terminalTitle}>TERMINAL DE DIAGNÓSTICO LIVE</Text>
+          </View>
+          <ScrollView 
+            ref={scrollViewRef}
+            style={styles.terminalScroll}
+            onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+          >
+            {logs.map((log, i) => (
+              <Text key={i} style={styles.terminalLine}>{log}</Text>
+            ))}
+          </ScrollView>
         </View>
       </View>
-
-      {/* 2. Grid de Componentes */}
-      <View style={styles.grid}>
-        {renderCard(
-          'ESP32 / Wi-Fi',
-          diag.components.esp32.ok,
-          false,
-          diag.components.esp32.status,
-          `Red: ${diag.components.esp32.wifi}`,
-          `Señal: ${diag.components.esp32.rssi} dBm`
-        )}
-        {renderCard(
-          'Sensor Humedad',
-          diag.components.sensor.ok,
-          false,
-          diag.components.sensor.status,
-          `Humedad: ${diag.components.sensor.moisture}%`,
-          `ADC: ${diag.components.sensor.adc}`
-        )}
-        {renderCard(
-          'Módulo Relé',
-          diag.components.relay.ok,
-          diag.components.relay.active,
-          diag.components.relay.status,
-          diag.components.relay.active ? 'Paso de energía: Abierto' : 'Paso de energía: Cerrado'
-        )}
-        {renderCard(
-          'Pilas / Batería',
-          diag.components.battery.ok,
-          false,
-          diag.components.battery.status,
-          `Carga: ${diag.components.battery.level}%`,
-          `ADC Divisor: ${diag.components.battery.adc}`
-        )}
-        {renderCard(
-          'Bomba de Agua',
-          diag.components.pump.ok,
-          diag.components.pump.running,
-          diag.components.pump.status,
-          diag.components.pump.running ? 'Detectando corriente' : 'Motor detenido'
-        )}
-        {renderCard(
-          'Protoboard',
-          diag.components.wiring.ok,
-          false,
-          diag.components.wiring.status,
-          diag.components.wiring.ok ? 'Todas las conexiones OK' : 'Revise cables puente'
-        )}
-      </View>
-
-      {/* 3. Consola de Eventos (Logs) */}
-      <View style={styles.terminalContainer}>
-        <View style={styles.terminalHeader}>
-          <Text style={styles.terminalTitle}>TERMINAL DE DIAGNÓSTICO LIVE</Text>
-        </View>
-        <ScrollView 
-          ref={scrollViewRef}
-          style={styles.terminalScroll}
-          onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
-        >
-          {logs.map((log, i) => (
-            <Text key={i} style={styles.terminalLine}>{log}</Text>
-          ))}
-        </ScrollView>
-      </View>
-    </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
+  esquema: {
+    marginTop: 24,
+  },
   container: {
     marginTop: 24,
     borderRadius: 16,

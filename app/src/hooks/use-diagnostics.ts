@@ -114,7 +114,31 @@ export function useDiagnostics(options: UseDiagnosticsOptions = {}): UseDiagnost
           );
         }
         if (!response.ok) {
-          return fail({ kind: 'server', message: `Error HTTP ${response.status}` }, true);
+          // Incluye la URL y el mensaje del servidor para poder ver qué ruta falló y quién respondió.
+          let detail = '';
+          try {
+            const text = await response.text();
+            try {
+              const parsed: unknown = JSON.parse(text);
+              const message =
+                typeof parsed === 'object' && parsed !== null && 'message' in parsed
+                  ? (parsed as { message?: unknown }).message
+                  : undefined;
+              detail = Array.isArray(message) ? message.join(', ') : String(message ?? text);
+            } catch {
+              detail = text;
+            }
+          } catch (e) {
+            if (controller.signal.aborted) throw e;
+          }
+          const shown = detail.trim().slice(0, 120);
+          return fail(
+            {
+              kind: 'server',
+              message: `Error HTTP ${response.status} en ${API_BASE_URL}/irrigation/diagnostics${shown ? ` (${shown})` : ''}`,
+            },
+            true,
+          );
         }
 
         let json: unknown;
