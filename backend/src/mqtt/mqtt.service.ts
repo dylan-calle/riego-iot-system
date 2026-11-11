@@ -26,7 +26,6 @@ interface StoredDiagnostics {
 @Injectable()
 export class MqttService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MqttService.name);
-  private readonly deviceHeartbeatTimeoutMs = 30_000;
   private client!: MqttClient;
 
   // Topics
@@ -38,22 +37,16 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     process.env.MQTT_PUMP_STATUS_TOPIC ?? 'home/garden/pump/status';
   private readonly deviceStatusTopic =
     process.env.MQTT_DEVICE_STATUS_TOPIC ?? 'home/garden/status';
-  private readonly diagnosticsTopic =
-    process.env.MQTT_DIAGNOSTICS_TOPIC ?? 'home/garden/diagnostics';
   private readonly thresholdConfigTopic =
     process.env.MQTT_THRESHOLD_CONFIG_TOPIC ?? 'home/garden/config/threshold';
+  private readonly diagnosticsTopic =
+    process.env.MQTT_DIAGNOSTICS_TOPIC ?? 'home/garden/diagnostics';
 
   // State
   private readonly latestDiagnostics = new Map<string, StoredDiagnostics>();
   private pumpState: 'ON' | 'OFF' | 'UNKNOWN' = 'UNKNOWN';
   private activeIrrigationEventId: number | null = null;
   private lastPumpActionTime: number = 0;
-  private pendingPumpCommand: {
-    command: 'ON' | 'OFF';
-    deviceCode: string;
-    mode: 'MANUAL' | 'AUTOMATIC';
-    soilHumidity?: number;
-  } | null = null;
 
   constructor(
     private readonly humidityService: HumidityService,
@@ -221,11 +214,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
    */
   private async handlePumpStatusMessage(rawMessage: string) {
     let status = rawMessage.trim().toUpperCase();
-    let deviceCode = 'esp32-01';
     try {
       const parsed = JSON.parse(rawMessage);
       if (parsed.status) status = String(parsed.status).toUpperCase();
-      deviceCode = parsed.deviceId ?? parsed.deviceCode ?? deviceCode;
     } catch {
       // String payload like "ON" or "OFF"
     }
@@ -234,33 +225,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       this.pumpState = status;
       this.logger.log(`Pump feedback status received from ESP32: ${status}`);
 
-      const pending = this.pendingPumpCommand;
-      const commandConfirmed =
-        pending?.command === status && pending.deviceCode === deviceCode;
-
-      if (
-        status === 'ON' &&
-        commandConfirmed &&
-        !this.activeIrrigationEventId
-      ) {
-        const orm = this.prisma.client.orm.public;
-        const device = await orm.Device.where({ code: deviceCode }).first();
-        const event = await orm.IrrigationEvent.create({
-          deviceId: device?.id ?? null,
-          mode: pending.mode,
-          status: 'ACTIVE',
-          soilHumidityBefore: pending.soilHumidity ?? null,
-        });
-        this.activeIrrigationEventId = event.id;
-      }
-
       // If pump reported OFF and we had an active event, close it
       if (status === 'OFF' && this.activeIrrigationEventId) {
         await this.finishActiveIrrigationEvent();
-      }
-
-      if (commandConfirmed) {
-        this.pendingPumpCommand = null;
       }
     }
   }
@@ -291,10 +258,6 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       const orm = this.prisma.client.orm.public;
       const device = await orm.Device.where({ code: deviceCode }).first();
       const nowIso = new Date().toISOString();
-
-      if (deviceCode === 'esp32-01' && status === 'OFFLINE') {
-        this.pumpState = 'UNKNOWN';
-      }
 
       if (!device) {
         await orm.Device.create({
@@ -335,11 +298,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     try {
       const parsed: unknown = JSON.parse(rawMessage);
 
-      if (
-        parsed === null ||
-        typeof parsed !== 'object' ||
-        Array.isArray(parsed)
-      ) {
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         this.logger.warn(`Received invalid diagnostics payload: ${rawMessage}`);
         return;
       }
@@ -473,37 +432,26 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     const cmdNormalized: 'ON' | 'OFF' =
       command.toUpperCase() === 'ON' ? 'ON' : 'OFF';
     const orm = this.prisma.client.orm.public;
-    const device = await orm.Device.where({ code: deviceCode }).first();
-    const lastSeenMs = device?.lastSeenAt
-      ? new Date(device.lastSeenAt).getTime()
-      : Number.NaN;
-    const deviceIsOnline =
-      device?.status === 'ONLINE' &&
-      Number.isFinite(lastSeenMs) &&
-      Date.now() - lastSeenMs >= -this.deviceHeartbeatTimeoutMs &&
-      Date.now() - lastSeenMs <= this.deviceHeartbeatTimeoutMs;
 
-    if (!deviceIsOnline) {
-      throw new ServiceUnavailableException(
-        `Cannot control the pump because device ${deviceCode} is offline or has no recent heartbeat`,
-      );
-    }
+    await this.publishPumpCommand(cmdNormalized);
 
-    this.pendingPumpCommand = {
-      command: cmdNormalized,
-      deviceCode,
-      mode,
-      soilHumidity,
-    };
-
-    try {
-      await this.publishPumpCommand(cmdNormalized);
-    } catch (error) {
-      this.pendingPumpCommand = null;
-      throw error;
-    }
-
+    this.pumpState = cmdNormalized;
     this.lastPumpActionTime = Date.now();
+
+    // Log the event in database
+    const device = await orm.Device.where({ code: deviceCode }).first();
+
+    if (cmdNormalized === 'ON') {
+      const event = await orm.IrrigationEvent.create({
+        deviceId: device?.id ?? null,
+        mode,
+        status: 'ACTIVE',
+        soilHumidityBefore: soilHumidity ?? null,
+      });
+      this.activeIrrigationEventId = event.id;
+    } else if (cmdNormalized === 'OFF') {
+      await this.finishActiveIrrigationEvent(soilHumidity);
+    }
 
     return {
       success: true,
@@ -511,7 +459,6 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       deviceCode,
       mode,
       pumpState: this.pumpState,
-      awaitingDeviceConfirmation: true,
     };
   }
 
@@ -563,20 +510,15 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       e.activatedAt.desc(),
     ).first();
 
-    const lastSeenMs = device?.lastSeenAt
-      ? new Date(device.lastSeenAt).getTime()
-      : Number.NaN;
-    const deviceIsOnline =
-      device?.status === 'ONLINE' &&
-      Number.isFinite(lastSeenMs) &&
-      Date.now() - lastSeenMs >= -this.deviceHeartbeatTimeoutMs &&
-      Date.now() - lastSeenMs <= this.deviceHeartbeatTimeoutMs;
+    // Last hardware diagnostics published by the ESP32 on home/garden/diagnostics.
+    // A retained message (e.g. right after a backend restart) can still be old, so it
+    // is not stamped with a reception time until a live message arrives (~every 3s).
     const diagnostics = this.latestDiagnostics.get(deviceCode);
 
     return {
-      pumpState: deviceIsOnline ? this.pumpState : 'UNKNOWN',
+      pumpState: this.pumpState,
       deviceCode,
-      deviceStatus: deviceIsOnline ? 'ONLINE' : 'OFFLINE',
+      deviceStatus: device?.status ?? 'UNKNOWN',
       lastSeenAt: device?.lastSeenAt ?? null,
       threshold: device?.minHumidityThreshold ?? 30.0,
       lastEvent: lastEvent ?? null,
@@ -596,16 +538,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       e.activatedAt.desc(),
     ).first();
 
-    const lastSeenMs = device?.lastSeenAt
-      ? new Date(device.lastSeenAt).getTime()
-      : Number.NaN;
-    const deviceIsOnline =
-      device?.status === 'ONLINE' &&
-      Number.isFinite(lastSeenMs) &&
-      Date.now() - lastSeenMs >= -this.deviceHeartbeatTimeoutMs &&
-      Date.now() - lastSeenMs <= this.deviceHeartbeatTimeoutMs;
-    const deviceStatus = deviceIsOnline ? 'ONLINE' : 'OFFLINE';
-    const diagnostics = this.latestDiagnostics.get(deviceCode);
+    const deviceStatus = device?.status ?? 'UNKNOWN';
 
     return {
       deviceCode,
@@ -615,11 +548,8 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       lastSeenAt: device?.lastSeenAt ?? null,
       minHumidityThreshold: device?.minHumidityThreshold ?? 30.0,
       maxHumidityThreshold: device?.maxHumidityThreshold ?? 70.0,
-      pumpState: deviceIsOnline ? this.pumpState : 'UNKNOWN',
+      pumpState: this.pumpState,
       lastEvent: lastEvent ?? null,
-      diagnostics: diagnostics?.payload ?? null,
-      diagnosticsReceivedAt:
-        diagnostics && !diagnostics.retained ? diagnostics.receivedAt : null,
     };
   }
 
