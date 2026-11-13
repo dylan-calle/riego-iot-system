@@ -14,12 +14,13 @@ import Svg from 'react-native-svg';
 
 import { COMPONENT_ORDER } from '@/constants/diagnostics';
 import { COLORES } from '@/constants/riego-colors';
-import type { ComponentKey, DiagnosticsPayload } from '@/types/diagnostics';
+import { isOfflineDiagnostics, type ComponentKey, type DiagnosticsPayload } from '@/types/diagnostics';
 
 import { buildCardModel, type CardModel, type CardState } from './card-model';
 import {
   LED_POSITIONS,
   SchematicArt,
+  SchematicWater,
   SchematicWires,
   VB_H,
   VB_W,
@@ -51,7 +52,14 @@ const HINTS: Partial<Record<ComponentKey, Partial<Record<CardState, string>>>> =
   },
   relay: { error: 'Revisa la alimentación del relé y el cable de señal que viene del ESP32.' },
   battery: { error: 'Revisa que las 4 pilas estén puestas y bien conectadas.' },
-  pump: { error: 'Revisa el cable de la bomba y que el relé y las pilas tengan energía.' },
+  pump: {
+    error: 'Revisa el cable de la bomba y que el relé y las pilas tengan energía.',
+    warning: 'La bomba está bloqueada porque el tanque no tiene agua. Llénalo para que pueda regar.',
+  },
+  waterTank: {
+    error:
+      'El nivel es crítico o el sensor HC-SR04 no recibe eco. Llena el tanque y revisa los 4 cables del sensor.',
+  },
   wiring: { error: 'Algún componente reporta desconexión: mira las otras luces en rojo.' },
 };
 
@@ -117,6 +125,7 @@ function deriveWireStates(m: Record<ComponentKey, CardModel>): WireStates {
     plus: power,
     load: m.pump.state,
     minus: m.pump.state,
+    level: m.waterTank.state,
   };
 }
 
@@ -266,6 +275,10 @@ export function CircuitSchematic({ diagnostics, isStale = false }: CircuitSchema
           <Svg width="100%" height="100%" viewBox={`0 0 ${VB_W} ${VB_H}`}>
             <SchematicArt />
             <SchematicWires states={wireStates} wiring={models.wiring.state} />
+            <SchematicWater
+              level={isOfflineDiagnostics(diagnostics) ? null : diagnostics.components.waterTank.level}
+              low={models.waterTank.state === 'error'}
+            />
           </Svg>
         </View>
 

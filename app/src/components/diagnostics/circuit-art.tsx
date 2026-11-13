@@ -18,6 +18,7 @@ export const LED_POSITIONS: Record<ComponentKey, { x: number; y: number }> = {
   relay: { x: 180, y: 300 },
   battery: { x: 119.5, y: 360 },
   pump: { x: 240.5, y: 360 },
+  waterTank: { x: 252, y: 290 },
 };
 
 const LABEL = { fontSize: 10, fontWeight: '600', fill: COLORES.tintaSuave, textAnchor: 'middle' } as const;
@@ -105,14 +106,26 @@ function ArtBase() {
         RELÉ
       </SvgText>
 
-      {/* Bomba en su vaso */}
-      <Path d="M256 342 H346 L338 432 H264 Z" fill="#CFEFF2" stroke="#9DB0AB" strokeWidth={2} strokeLinejoin="round" />
-      <Path d="M258.7 372 H343.3 L338 432 H264 Z" fill="#7CD3DC" opacity={0.55} />
+      {/* Tanque con la bomba sumergida (el agua se dibuja aparte, según el nivel) */}
+      <Path d="M256 342 H346 L338 432 H264 Z" fill="#E8F6F8" stroke="#9DB0AB" strokeWidth={2} strokeLinejoin="round" />
       <Rect x={284} y={384} width={36} height={28} rx={7} fill="#E5E7EB" stroke="#94A3B8" strokeWidth={1.5} />
       <Rect x={318} y={392} width={10} height={8} rx={2} fill="#94A3B8" />
       <Circle cx={296} cy={398} r={4} fill="#94A3B8" />
-      <SvgText x={301} y={334} {...LABEL}>
-        Bomba de agua
+      <SvgText x={270} y={419.5} fontSize={8} fill={COLORES.tintaSuave}>
+        Bomba
+      </SvgText>
+
+      {/* Sensor ultrasónico HC-SR04 sobre el tanque */}
+      <Rect x={266} y={292} width={70} height={30} rx={4} fill="#0284C7" />
+      <Rect x={262} y={298} width={6} height={14} rx={1.5} fill="#E5B94B" />
+      <Circle cx={283} cy={307} r={10} fill="#E5E7EB" stroke="#94A3B8" strokeWidth={1.5} />
+      <Circle cx={283} cy={307} r={5} fill="#64748B" />
+      <Circle cx={319} cy={307} r={10} fill="#E5E7EB" stroke="#94A3B8" strokeWidth={1.5} />
+      <Circle cx={319} cy={307} r={5} fill="#64748B" />
+      <Path d="M291 327 Q301 333 311 327" fill="none" stroke="#0284C7" strokeWidth={1.5} strokeLinecap="round" opacity={0.8} />
+      <Path d="M286 332 Q301 341 316 332" fill="none" stroke="#0284C7" strokeWidth={1.5} strokeLinecap="round" opacity={0.55} />
+      <SvgText x={306} y={286} {...LABEL}>
+        Sensor HC-SR04
       </SvgText>
     </G>
   );
@@ -135,6 +148,8 @@ export interface WireStates {
   load: CardState;
   /** Bomba (−) -> pilas (−). */
   minus: CardState;
+  /** ESP32 -> sensor de nivel HC-SR04. */
+  level: CardState;
 }
 
 const WIRE_PATHS: Record<keyof WireStates, string> = {
@@ -143,6 +158,7 @@ const WIRE_PATHS: Record<keyof WireStates, string> = {
   plus: 'M106 360 H133',
   load: 'M227 360 H254 H270 V395 H284',
   minus: 'M302 412 V446 H59 V434',
+  level: 'M252 252 V307 H262',
 };
 
 const WIRE_STYLE: Record<CardState, { color: string; dashed: boolean }> = {
@@ -190,6 +206,56 @@ export function SchematicWires({ states, wiring }: SchematicWiresProps) {
           />
         );
       })}
+    </G>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Agua del tanque: la altura sale del nivel (%) que mide el HC-SR04          */
+/* -------------------------------------------------------------------------- */
+
+const TANK_TOP = 346; // superficie con el tanque al 100 %
+const TANK_BOTTOM = 430; // fondo (0 %)
+
+interface SchematicWaterProps {
+  /** Nivel en % (0-100). null cuando el dispositivo no reporta el sensor. */
+  level: number | null;
+  /** true cuando el firmware considera el nivel crítico (<= 10 %). */
+  low: boolean;
+}
+
+export function SchematicWater({ level, low }: SchematicWaterProps) {
+  const pct = level === null ? 0 : Math.min(100, Math.max(0, level));
+  const surface = TANK_BOTTOM - (pct / 100) * (TANK_BOTTOM - TANK_TOP);
+  // El tanque se angosta hacia abajo: calcula el ancho a la altura de la superficie.
+  const t = (surface - 342) / 90;
+  const left = 256 + 8 * t;
+  const right = 346 - 8 * t;
+
+  return (
+    <G>
+      {pct > 0 ? (
+        <Path
+          d={`M${left} ${surface} H${right} L338 432 H264 Z`}
+          fill={low ? '#E8A09A' : '#7CD3DC'}
+          opacity={0.6}
+        />
+      ) : null}
+
+      {/* Marca del 10 %: por debajo de este nivel la bomba se bloquea. */}
+      <Path d="M265 421.6 H339" stroke="#DC2626" strokeWidth={1} strokeDasharray="3 3" opacity={0.75} />
+
+      {level !== null ? (
+        <>
+          {/* Distancia que mide el sensor: desde el HC-SR04 hasta la superficie. */}
+          <Path d={`M353 322 V${surface}`} stroke="#0284C7" strokeWidth={1.5} />
+          <Path d="M349 322 H357" stroke="#0284C7" strokeWidth={1.5} />
+          <Path d={`M349 ${surface} H357`} stroke="#0284C7" strokeWidth={1.5} />
+          <SvgText x={340} y={364} fontSize={11} fontWeight="800" fill={COLORES.tinta} textAnchor="end">
+            {`${pct} %`}
+          </SvgText>
+        </>
+      ) : null}
     </G>
   );
 }

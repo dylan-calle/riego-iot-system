@@ -6,6 +6,7 @@ export const COMPONENT_ORDER: ComponentKey[] = [
   'relay',
   'battery',
   'pump',
+  'waterTank',
   'wiring',
 ];
 
@@ -15,6 +16,7 @@ export const COMPONENT_TITLES: Record<ComponentKey, string> = {
   relay: 'Módulo relé',
   battery: 'Batería',
   pump: 'Bomba de agua',
+  waterTank: 'Tanque de agua',
   wiring: 'Cableado',
 };
 
@@ -46,6 +48,11 @@ const STATUS_LABELS: Record<ComponentKey, Record<string, string>> = {
     SIN_ENERGIA_PREVIA: 'Sin energía: revisa relé y pilas',
     BOMBEANDO_OK: 'Bombeando',
     CABLE_BOMBA_SUELTO: 'Cable de la bomba suelto',
+    BLOQUEADA_SIN_AGUA: 'Bloqueada: el tanque no tiene agua',
+  },
+  waterTank: {
+    NIVEL_OK: 'Nivel suficiente',
+    NIVEL_CRITICO_BAJO: 'Nivel crítico: bomba bloqueada',
   },
   wiring: {
     CIRCUITO_COMPLETO: 'Circuito completo',

@@ -60,16 +60,20 @@ type EventoRiego = {
 
 type EstadoBomba = {
   pumpState: string;
+  // El backend lo envía en true cuando el tanque de la bomba está vacío
+  tankEmpty?: boolean;
   deviceStatus?: string;
   lastSeenAt?: string | null;
   diagnostics?: {
     generalStatus?: string;
+    waterTank?: { ok?: boolean; status?: string; level?: number };
     components?: {
       pump?: {
         ok?: boolean;
         status?: string;
         running?: boolean;
       };
+      waterTank?: { ok?: boolean; status?: string; level?: number };
     };
   } | null;
   diagnosticsReceivedAt?: string | null;
@@ -211,6 +215,30 @@ function analizarEstado(e: EstadoBomba | null, datosFrescos: boolean) {
   const fallo = encendida && diagnosticoVigente && bomba?.ok === false;
   const estadoConocido = conectado && (e?.pumpState === "ON" || e?.pumpState === "OFF");
   return { conectado, encendida, bombeando, fallo, estadoConocido };
+}
+
+/**
+ * true si el tanque de agua de la bomba está vacío. Usa el dato del backend (tankEmpty)
+ * y, como respaldo, el diagnóstico del propio ESP32 (nivel crítico o bomba bloqueada
+ * sin agua), siempre que sea reciente.
+ */
+function tanqueSinAgua(e: EstadoBomba | null, datosFrescos: boolean) {
+  if (!e || !datosFrescos || e.deviceStatus !== "ONLINE") return false;
+  if (e.tankEmpty === true) return true;
+
+  const latido = parsearFecha(e.lastSeenAt);
+  const diagnostico = parsearFecha(e.diagnosticsReceivedAt);
+  const vigente =
+    Number.isFinite(latido) &&
+    Number.isFinite(diagnostico) &&
+    Math.abs(latido - diagnostico) <= 30_000;
+  if (!vigente) return false;
+
+  const d: any = e.diagnostics;
+  const tanque = d?.waterTank ?? d?.components?.waterTank;
+  return (
+    tanque?.status === "NIVEL_CRITICO_BAJO" || d?.components?.pump?.status === "BLOQUEADA_SIN_AGUA"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +431,16 @@ export default function Index() {
     }
     if (controlEnCurso.current) return;
 
+    // Con el tanque vacío ni siquiera se envía el comando: se avisa el motivo real
+    if (comando === "ON" && tanqueSinAgua(estado, datosFrescos)) {
+      mostrarAviso(
+        "error",
+        "Tanque sin agua",
+        "El tanque de la bomba está vacío. Rellénalo para poder regar.",
+      );
+      return;
+    }
+
     controlEnCurso.current = true;
     setIsSubmitting(true);
     try {
@@ -421,6 +459,18 @@ export default function Index() {
         if (respuesta.status === 403) {
           throw new Error("Tu cuenta no tiene permiso para controlar la bomba.");
         }
+        if (respuesta.status === 409) {
+          // El backend rechaza el encendido porque el tanque está vacío
+          const motivo = (await respuesta.json().catch(() => ({}))) as {
+            message?: string | string[];
+          };
+          mostrarAviso(
+            "error",
+            "Tanque sin agua",
+            mensajeDeError(motivo, "El tanque de agua está vacío. Rellénalo para poder regar."),
+          );
+          return;
+        }
         const detalle = (await respuesta.json().catch(() => ({}))) as {
           message?: string | string[];
         };
@@ -432,6 +482,7 @@ export default function Index() {
       let falloDetectado = false;
       let releActivo = false;
       let desconectado = false;
+      let sinAgua = false;
 
       for (let intento = 0; intento < 10; intento += 1) {
         await new Promise<void>((resolve) => setTimeout(resolve, 1000));
@@ -451,6 +502,11 @@ export default function Index() {
           desconectado = true;
           break;
         }
+        // El firmware rechaza el ON si no hay agua: se corta la espera y se avisa el motivo
+        if (comando === "ON" && tanqueSinAgua(nuevoEstado, true)) {
+          sinAgua = true;
+          break;
+        }
         if (nuevoEstado.pumpState !== comando) continue;
 
         if (comando === "OFF") {
@@ -468,7 +524,13 @@ export default function Index() {
         }
       }
 
-      if (confirmado) {
+      if (sinAgua) {
+        mostrarAviso(
+          "error",
+          "Tanque sin agua",
+          "La bomba no se encendió porque el tanque está vacío. Rellénalo para poder regar.",
+        );
+      } else if (confirmado) {
         mostrarAviso(
           "ok",
           comando === "ON" ? "Bomba funcionando" : "Bomba apagada",

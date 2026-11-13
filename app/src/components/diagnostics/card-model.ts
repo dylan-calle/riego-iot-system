@@ -34,6 +34,7 @@ const BASE_ICONS: Record<ComponentKey, IconName> = {
   relay: 'electric-switch',
   battery: 'battery',
   pump: 'water-pump',
+  waterTank: 'water',
   wiring: 'connection',
 };
 
@@ -114,17 +115,31 @@ export function buildCardModel(key: ComponentKey, payload: DiagnosticsPayload): 
 
     case 'pump': {
       const { ok, status, running, adc } = c.pump;
+      // El firmware bloquea la bomba cuando el tanque no tiene agua (ok sigue en true).
+      const blocked = status === 'BLOQUEADA_SIN_AGUA';
       return {
         key,
         title,
         icon,
-        state: !ok ? 'error' : running ? 'active' : 'ok',
-        primary: !ok ? 'Falla' : running ? 'En marcha' : 'Detenida',
+        state: !ok ? 'error' : blocked ? 'warning' : running ? 'active' : 'ok',
+        primary: !ok ? 'Falla' : blocked ? 'Bloqueada' : running ? 'En marcha' : 'Detenida',
         lines: [
           statusLabel(key, status),
           // El firmware solo puede comprobar la conexión de la bomba mientras bombea.
-          ok && !running ? 'Se verifica al encender' : `ADC ${adc}`,
+          blocked ? 'Se desbloquea cuando el tanque tenga agua' : ok && !running ? 'Se verifica al encender' : `ADC ${adc}`,
         ],
+      };
+    }
+
+    case 'waterTank': {
+      const { ok, status, level } = c.waterTank;
+      return {
+        key,
+        title,
+        icon,
+        state: ok ? 'ok' : 'error',
+        primary: `${level}%`,
+        lines: [statusLabel(key, status), 'Medido con el HC-SR04 sobre el tanque'],
       };
     }
 

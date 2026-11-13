@@ -17,7 +17,9 @@ export type PumpStatus =
   | 'EN_ESPERA'
   | 'SIN_ENERGIA_PREVIA'
   | 'BOMBEANDO_OK'
-  | 'CABLE_BOMBA_SUELTO';
+  | 'CABLE_BOMBA_SUELTO'
+  | 'BLOQUEADA_SIN_AGUA';
+export type WaterTankStatus = 'NIVEL_OK' | 'NIVEL_CRITICO_BAJO';
 export type WiringStatus = 'CIRCUITO_COMPLETO' | 'COMPONENTE_DESCONECTADO';
 
 export interface Esp32Component {
@@ -55,6 +57,18 @@ export interface PumpComponent {
   running: boolean;
 }
 
+/**
+ * Nivel de agua del tanque, medido con el sensor ultrasónico HC-SR04.
+ * `level` va de 0 a 100 %. `ok:false` (nivel <= 10 %) hace que el firmware
+ * bloquee la bomba. Tampoco hay lectura válida si el sensor no recibe eco, y en
+ * ese caso el firmware también informa NIVEL_CRITICO_BAJO con level 0.
+ */
+export interface WaterTankComponent {
+  ok: boolean;
+  status: WaterTankStatus;
+  level: number;
+}
+
 export interface WiringComponent {
   ok: boolean;
   status: WiringStatus;
@@ -66,6 +80,7 @@ export interface DiagnosticsComponents {
   relay: RelayComponent;
   battery: BatteryComponent;
   pump: PumpComponent;
+  waterTank: WaterTankComponent;
   wiring: WiringComponent;
 }
 
@@ -127,6 +142,7 @@ const COMPONENT_FIELDS = {
   relay: { adc: 'number', active: 'boolean' },
   battery: { adc: 'number', level: 'number' },
   pump: { adc: 'number', running: 'boolean' },
+  waterTank: { level: 'number' },
   wiring: {},
 } as const satisfies Record<ComponentKey, Record<string, FieldType>>;
 
